@@ -97,7 +97,7 @@ function LangToggle() {
     <div style={{ display: "inline-flex", gap: 4, background: "var(--bark)", border: "1px solid var(--moss)", borderRadius: 8, padding: 3 }}>
       {opts.map(([code, label]) => (
         <button key={code} onClick={() => setLang(code)}
-          style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 12, letterSpacing: 1, padding: "3px 9px",
+          style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, letterSpacing: 1, padding: "4px 8px",
             borderRadius: 6, border: "none", cursor: "pointer",
             background: lang === code ? "var(--lime)" : "transparent",
             color: lang === code ? "var(--earth)" : "var(--stone)", fontWeight: 700 }}>
@@ -853,7 +853,7 @@ function BuildSchedule({ onDone }) {
   const toggleMember = (name) =>
     setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
 
-  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "" }]);
+  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, recurUntil: "" }]);
   const setStop = (key, patch) => setStops((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
   const rmStop = (key) => setStops((s) => s.filter((st) => st.key !== key));
 
@@ -861,33 +861,53 @@ function BuildSchedule({ onDone }) {
     if (!crew) { setMsg("Pick a crew."); return; }
     const valid = stops.filter((s) => s.address.trim());
     if (valid.length === 0) { setMsg("Add at least one stop with an address."); return; }
+    // recurring stops need a valid end date
+    for (const s of valid) {
+      if (s.recurring && (!s.recurUntil || s.recurUntil < date)) {
+        setMsg("Set an end date (on or after the start date) for each recurring stop.");
+        return;
+      }
+    }
     setBusy(true); setMsg("");
+
+    const startDow = new Date(date + "T12:00:00").getDay();
 
     // 1. save/refresh the crew roster
     await supabase.from("crews").update({ truck_number: truck || null, members, updated_at: new Date().toISOString() })
       .eq("crew_number", crew);
 
-    // 2. insert one job per stop
-    let order = 0;
+    // 2. insert jobs per stop — once for a one-off, weekly for a recurring stop
+    let stopIndex = 0;
+    let total = 0;
     for (const s of valid) {
       let lat = s.client?.lat ?? null, lng = s.client?.lng ?? null;
       if (lat == null) { const g = await geocode(s.address); if (g) { lat = g.lat; lng = g.lng; } }
-      await supabase.from("jobs").insert({
-        crew_number: Number(crew),
-        date,
-        client_id: s.client?.id || null,
-        address: s.address,
-        lat, lng,
-        service_type: s.service_type || null,
-        notes: s.notes || null,
-        truck_number: truck || null,
-        members,
-        status: "scheduled",
-        sort_order: order++,
-      });
+      const dates = s.recurring
+        ? eachDayInRange(date, s.recurUntil, new Set([startDow]))   // same weekday each week
+        : [date];
+      for (const d of dates) {
+        await supabase.from("jobs").insert({
+          crew_number: Number(crew),
+          date: d,
+          client_id: s.client?.id || null,
+          address: s.address,
+          lat, lng,
+          service_type: s.service_type || null,
+          notes: s.notes || null,
+          truck_number: truck || null,
+          members,
+          status: "scheduled",
+          sort_order: stopIndex,
+        });
+        total++;
+      }
+      stopIndex++;
     }
     setBusy(false);
-    onDone?.(`Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for Crew ${crew} on ${prettyDate(date)}.`);
+    const anyRecurring = valid.some((s) => s.recurring);
+    onDone?.(anyRecurring
+      ? `Scheduled ${total} job${total > 1 ? "s" : ""} for Crew ${crew} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring weekly).`
+      : `Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for Crew ${crew} on ${prettyDate(date)}.`);
   };
 
   const crewOpts = ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` + (isMowing(n) ? " (Mowing)" : "") }));
@@ -939,6 +959,25 @@ function BuildSchedule({ onDone }) {
               <span className="label">Notes for crew</span>
               <textarea className="input" style={{ height: 56, fontSize: 14 }} placeholder="Gate code, dog on site, skip back lawn…"
                 value={s.notes} onChange={(e) => setStop(s.key, { notes: e.target.value })} />
+
+              <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12 }}>
+                <input type="checkbox" id={`rec-${s.key}`} checked={s.recurring}
+                  onChange={(e) => setStop(s.key, { recurring: e.target.checked })}
+                  style={{ width: 17, height: 17, accentColor: "var(--lime)", cursor: "pointer" }} />
+                <label htmlFor={`rec-${s.key}`} className="hd-cond"
+                  style={{ fontSize: 14, color: "var(--cream)", letterSpacing: 1, cursor: "pointer" }}>
+                  Recurring weekly
+                </label>
+              </div>
+              {s.recurring && (
+                <div style={{ marginTop: 8 }}>
+                  <span className="label">
+                    Repeat every {new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" })} until
+                  </span>
+                  <input className="input" type="date" min={date} value={s.recurUntil}
+                    onChange={(e) => setStop(s.key, { recurUntil: e.target.value })} />
+                </div>
+              )}
             </div>
           ))}
           <button className="btn btn-ghost btn-sm" onClick={addStop} style={{ marginBottom: 16 }}>
