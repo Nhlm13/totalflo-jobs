@@ -92,7 +92,7 @@ function useT() {
 }
 function LangToggle() {
   const { lang, setLang } = useLang();
-  const opts = [["en", "EN"], ["es", "ES"], ["pt", "PT"]];
+  const opts = [["en", "🇺🇸"], ["es", "🇬🇹"], ["pt", "🇧🇷"]];
   return (
     <div style={{ display: "inline-flex", gap: 4, background: "var(--bark)", border: "1px solid var(--moss)", borderRadius: 8, padding: 3 }}>
       {opts.map(([code, label]) => (
