@@ -1,0 +1,5 @@
+name,address,contact_name,contact_phone,lat,lng
+Avon Town Hall,"65 East Main St, Avon, MA 02322",Jane Doe,508-555-0101,,
+Brockton Plaza,"123 Belmont St, Brockton, MA 02301",Mike Reardon,508-555-0144,,
+Stoughton Office Park,"500 Technology Center Dr, Stoughton, MA 02072",,,,
+Sample With Coords,"1 City Hall Sq, Boston, MA 02201",Pat Lee,617-555-0199,42.3603,-71.0577

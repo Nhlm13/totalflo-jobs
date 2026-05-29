@@ -1,0 +1,13 @@
+import { createClient } from "@supabase/supabase-js";
+
+const url = import.meta.env.VITE_SUPABASE_URL;
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!url || !key) {
+  console.warn(
+    "Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. " +
+    "Create a .env file (see .env.example)."
+  );
+}
+
+export const supabase = createClient(url || "http://localhost", key || "anon");
