@@ -22,6 +22,92 @@ const CREW_COLORS = [
   "#06b6d4", "#fb7185", "#65a30d", "#3b82f6", "#f59e0b",
 ];
 
+/* =============================== i18n ==============================
+   Crew-facing screens are translated. Each device remembers its choice.
+   Manager screens stay in English.
+   =================================================================== */
+const LOCALES = { en: "en-US", es: "es-ES", pt: "pt-BR" };
+const TR = {
+  en: {
+    crewDispatch: "Crew Dispatch", selectCrew: "Select your crew", chooseCrew: "Choose a crew…",
+    signIn: "SIGN IN", managerLogin: "Manager / Office login", crew: "Crew", mowing: "Mowing",
+    managerAccess: "MANAGER ACCESS", passcode: "Passcode", enter: "ENTER",
+    incorrectPasscode: "Incorrect passcode.", backToCrew: "← Back to crew login", signOut: "Sign out",
+    noJobsToday: "No jobs assigned today", toDo: "To Do", allCaughtUp: "All caught up! 🎉", done: "Done",
+    job: "Job", project: "Project", continueJob: "Continue", openJob: "Open job",
+    backToJobs: "Back to jobs", managerNotes: "Manager Notes", running: "Running", paused: "Paused",
+    arrivalChecklist: "Arrival Checklist", propertyWalkthrough: "Property walk-through",
+    documentDamage: "Document existing damage", optional: "optional", damagePhotos: "Damage photos",
+    damageNotePlaceholder: "Notes about existing damage…", beforePhoto: "Before photo", photos: "Photos",
+    time: "Time", startJob: "START JOB", endJob: "END JOB", resumeTimer: "RESUME TIMER",
+    afterPhoto: "After photo", completionNotes: "Completion notes (optional)…", saving: "Saving…",
+    doneForToday: "DONE FOR TODAY", markComplete: "MARK COMPLETE", uploadingPhoto: "Uploading photo…",
+    add: "ADD", statusComplete: "Complete", statusInProgress: "In Progress",
+    statusDoneToday: "Done Today", statusScheduled: "Scheduled",
+  },
+  es: {
+    crewDispatch: "Despacho de Cuadrillas", selectCrew: "Selecciona tu cuadrilla", chooseCrew: "Elige una cuadrilla…",
+    signIn: "INICIAR SESIÓN", managerLogin: "Acceso de gerente / oficina", crew: "Cuadrilla", mowing: "Corte",
+    managerAccess: "ACCESO DE GERENTE", passcode: "Código", enter: "ENTRAR",
+    incorrectPasscode: "Código incorrecto.", backToCrew: "← Volver al inicio de cuadrilla", signOut: "Cerrar sesión",
+    noJobsToday: "No hay trabajos asignados hoy", toDo: "Por Hacer", allCaughtUp: "¡Todo al día! 🎉", done: "Hecho",
+    job: "Trabajo", project: "Proyecto", continueJob: "Continuar", openJob: "Abrir trabajo",
+    backToJobs: "Volver a trabajos", managerNotes: "Notas del Gerente", running: "En curso", paused: "Pausado",
+    arrivalChecklist: "Lista de Llegada", propertyWalkthrough: "Recorrido de la propiedad",
+    documentDamage: "Documentar daños existentes", optional: "opcional", damagePhotos: "Fotos de daños",
+    damageNotePlaceholder: "Notas sobre daños existentes…", beforePhoto: "Foto antes", photos: "Fotos",
+    time: "Tiempo", startJob: "INICIAR TRABAJO", endJob: "TERMINAR TRABAJO", resumeTimer: "REANUDAR TIEMPO",
+    afterPhoto: "Foto después", completionNotes: "Notas de finalización (opcional)…", saving: "Guardando…",
+    doneForToday: "LISTO POR HOY", markComplete: "MARCAR COMPLETO", uploadingPhoto: "Subiendo foto…",
+    add: "AGREGAR", statusComplete: "Completo", statusInProgress: "En Progreso",
+    statusDoneToday: "Hecho Hoy", statusScheduled: "Programado",
+  },
+  pt: {
+    crewDispatch: "Despacho de Equipes", selectCrew: "Selecione sua equipe", chooseCrew: "Escolha uma equipe…",
+    signIn: "ENTRAR", managerLogin: "Acesso de gerente / escritório", crew: "Equipe", mowing: "Corte",
+    managerAccess: "ACESSO DE GERENTE", passcode: "Senha", enter: "ENTRAR",
+    incorrectPasscode: "Senha incorreta.", backToCrew: "← Voltar ao login da equipe", signOut: "Sair",
+    noJobsToday: "Nenhum trabalho atribuído hoje", toDo: "A Fazer", allCaughtUp: "Tudo em dia! 🎉", done: "Concluído",
+    job: "Trabalho", project: "Projeto", continueJob: "Continuar", openJob: "Abrir trabalho",
+    backToJobs: "Voltar aos trabalhos", managerNotes: "Notas do Gerente", running: "Em andamento", paused: "Pausado",
+    arrivalChecklist: "Checklist de Chegada", propertyWalkthrough: "Vistoria da propriedade",
+    documentDamage: "Documentar danos existentes", optional: "opcional", damagePhotos: "Fotos de danos",
+    damageNotePlaceholder: "Notas sobre danos existentes…", beforePhoto: "Foto antes", photos: "Fotos",
+    time: "Tempo", startJob: "INICIAR TRABALHO", endJob: "ENCERRAR TRABALHO", resumeTimer: "RETOMAR TEMPO",
+    afterPhoto: "Foto depois", completionNotes: "Notas de conclusão (opcional)…", saving: "Salvando…",
+    doneForToday: "CONCLUÍDO POR HOJE", markComplete: "MARCAR CONCLUÍDO", uploadingPhoto: "Enviando foto…",
+    add: "ADICIONAR", statusComplete: "Concluído", statusInProgress: "Em Progresso",
+    statusDoneToday: "Feito Hoje", statusScheduled: "Agendado",
+  },
+};
+const LangContext = React.createContext({ lang: "en", setLang: () => {} });
+function useLang() { return React.useContext(LangContext); }
+function useT() {
+  const { lang } = React.useContext(LangContext);
+  return (key, vars) => {
+    let s = (TR[lang] && TR[lang][key]) || TR.en[key] || key;
+    if (vars) for (const k in vars) s = String(s).split("{" + k + "}").join(vars[k]);
+    return s;
+  };
+}
+function LangToggle() {
+  const { lang, setLang } = useLang();
+  const opts = [["en", "EN"], ["es", "ES"], ["pt", "PT"]];
+  return (
+    <div style={{ display: "inline-flex", gap: 4, background: "var(--bark)", border: "1px solid var(--moss)", borderRadius: 8, padding: 3 }}>
+      {opts.map(([code, label]) => (
+        <button key={code} onClick={() => setLang(code)}
+          style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 12, letterSpacing: 1, padding: "3px 9px",
+            borderRadius: 6, border: "none", cursor: "pointer",
+            background: lang === code ? "var(--lime)" : "transparent",
+            color: lang === code ? "var(--earth)" : "var(--stone)", fontWeight: 700 }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /* ----------------------------- date helpers ------------------------- */
 const TZ = "America/New_York";
 const todayStr = () => new Date().toLocaleDateString("en-CA", { timeZone: TZ });
@@ -30,9 +116,9 @@ const addDays = (dateStr, n) => {
   d.setDate(d.getDate() + n);
   return d.toLocaleDateString("en-CA");
 };
-const prettyDate = (dateStr) => {
+const prettyDate = (dateStr, locale = "en-US") => {
   const d = new Date(dateStr + "T12:00:00");
-  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  return d.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
 };
 const eachDayInRange = (start, end, weekdays /* set of 0-6 */) => {
   const out = [];
@@ -291,16 +377,18 @@ function AddressSearch({ clients, onPick, value, onChangeText }) {
 }
 
 function StatusChip({ status }) {
-  if (status === "completed") return <span className="chip chip-done"><Ic n="check" size={12} /> Complete</span>;
-  if (status === "in_progress") return <span className="chip chip-prog"><Ic n="clock" size={12} /> In Progress</span>;
-  if (status === "done_for_today") return <span className="chip chip-done"><Ic n="check" size={12} /> Done Today</span>;
-  return <span className="chip chip-sched">Scheduled</span>;
+  const t = useT();
+  if (status === "completed") return <span className="chip chip-done"><Ic n="check" size={12} /> {t("statusComplete")}</span>;
+  if (status === "in_progress") return <span className="chip chip-prog"><Ic n="clock" size={12} /> {t("statusInProgress")}</span>;
+  if (status === "done_for_today") return <span className="chip chip-done"><Ic n="check" size={12} /> {t("statusDoneToday")}</span>;
+  return <span className="chip chip-sched">{t("statusScheduled")}</span>;
 }
 
 /* ===================================================================
    LOGIN
    =================================================================== */
 function LoginScreen({ onCrewLogin, onManagerLogin }) {
+  const t = useT();
   const [mode, setMode] = useState("crew");
   const [crew, setCrew] = useState("");
   const [pass, setPass] = useState("");
@@ -308,54 +396,58 @@ function LoginScreen({ onCrewLogin, onManagerLogin }) {
 
   const crewOpts = ALL_CREWS.map((n) => ({
     value: n,
-    label: `Crew ${n}` + (isMowing(n) ? "  (Mowing)" : ""),
+    label: `${t("crew")} ${n}` + (isMowing(n) ? `  (${t("mowing")})` : ""),
   }));
 
   const tryManager = () => {
     if (pass === MANAGER_PASSCODE) onManagerLogin();
-    else setErr("Incorrect passcode.");
+    else setErr(t("incorrectPasscode"));
   };
 
   return (
     <div className="splash">
-      <div style={{ textAlign: "center", marginBottom: 36 }}>
+      <div style={{ textAlign: "center", marginBottom: 22 }}>
         <div className="logo-title">TOTALFLO</div>
-        <div className="logo-sub">Crew Dispatch</div>
+        <div className="logo-sub">{t("crewDispatch")}</div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 28 }}>
+        <LangToggle />
       </div>
 
       {mode === "crew" ? (
         <div style={{ width: "100%" }}>
-          <span className="label">Select your crew</span>
+          <span className="label">{t("selectCrew")}</span>
           <div style={{ marginBottom: 16 }}>
-            <Dropdown value={crew} placeholder="Choose a crew…" options={crewOpts}
+            <Dropdown value={crew} placeholder={t("chooseCrew")} options={crewOpts}
               onChange={setCrew} />
           </div>
           <button className="btn btn-lime" disabled={!crew}
-            onClick={() => onCrewLogin(Number(crew))}>SIGN IN</button>
+            onClick={() => onCrewLogin(Number(crew))}>{t("signIn")}</button>
           <div onClick={() => { setMode("mgr"); setErr(""); }}
             style={{ marginTop: 26, textAlign: "center", fontFamily: "'Barlow Condensed',sans-serif",
               fontSize: 13, color: "var(--mgr-lt)", cursor: "pointer", letterSpacing: 1,
               textDecoration: "underline", textUnderlineOffset: 3 }}>
-            Manager / Office login
+            {t("managerLogin")}
           </div>
         </div>
       ) : (
         <div style={{ width: "100%", background: "var(--bark)", border: "1.5px solid var(--mgr)",
           borderRadius: 12, padding: 20 }}>
           <div className="hd-bebas" style={{ fontSize: 22, color: "var(--mgr-lt)", letterSpacing: 2, marginBottom: 16 }}>
-            MANAGER ACCESS
+            {t("managerAccess")}
           </div>
-          <span className="label">Passcode</span>
+          <span className="label">{t("passcode")}</span>
           <input className="input" type="password" placeholder="••••••••" value={pass}
             style={{ marginBottom: 14, textAlign: "center", letterSpacing: 4 }}
             onChange={(e) => { setPass(e.target.value); setErr(""); }}
             onKeyDown={(e) => e.key === "Enter" && tryManager()} />
-          <button className="btn btn-mgr" onClick={tryManager}>ENTER</button>
+          <button className="btn btn-mgr" onClick={tryManager}>{t("enter")}</button>
           {err && <div className="error" style={{ marginTop: 12 }}>{err}</div>}
           <div onClick={() => { setMode("crew"); setErr(""); }}
             style={{ marginTop: 18, textAlign: "center", fontFamily: "'Barlow Condensed',sans-serif",
               fontSize: 13, color: "var(--stone)", cursor: "pointer", letterSpacing: 1 }}>
-            ← Back to crew login
+            {t("backToCrew")}
           </div>
         </div>
       )}
@@ -373,12 +465,13 @@ function LoginScreen({ onCrewLogin, onManagerLogin }) {
    CREW — photo strip helper
    =================================================================== */
 function PhotoStrip({ photos, kind, onAdd, onRemove, label, optional }) {
+  const t = useT();
   const ref = useRef(null);
   const shown = photos.filter((p) => p.kind === kind);
   return (
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-        <span className="label" style={{ margin: 0 }}>{label}{optional && <span style={{ color: "var(--moss)" }}> · optional</span>}</span>
+        <span className="label" style={{ margin: 0 }}>{label}{optional && <span style={{ color: "var(--moss)" }}> · {t("optional")}</span>}</span>
       </div>
       <input ref={ref} type="file" accept="image/*" capture="environment" multiple style={{ display: "none" }}
         onChange={(e) => { const fs = Array.from(e.target.files || []); if (fs.length) onAdd(fs, kind); e.target.value = ""; }} />
@@ -395,7 +488,7 @@ function PhotoStrip({ photos, kind, onAdd, onRemove, label, optional }) {
             flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: "pointer",
             color: "var(--stone)" }}>
           <Ic n="camera" size={22} />
-          <span className="hd-cond" style={{ fontSize: 11, letterSpacing: 1 }}>ADD</span>
+          <span className="hd-cond" style={{ fontSize: 11, letterSpacing: 1 }}>{t("add")}</span>
         </div>
       </div>
     </div>
@@ -406,6 +499,7 @@ function PhotoStrip({ photos, kind, onAdd, onRemove, label, optional }) {
    CREW — Job Detail (handles mowing checklist, non-mowing, projects)
    =================================================================== */
 function CrewJobDetail({ job, crew, onBack, onChanged }) {
+  const t = useT();
   const mowing = isMowing(crew);
   const project = job.is_project;
   const [checklist, setChecklist] = useState(job.checklist || {});
@@ -490,20 +584,20 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
     onBack();
   };
 
-  const title = job.client_name || job.address || "Job";
+  const title = job.client_name || job.address || t("job");
   const started = status === "in_progress" || baseSecs > 0;
   const ended = startedAt === null && baseSecs > 0;
 
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
-      <button className="back-btn" onClick={onBack}><Ic n="back" size={14} /> Back to jobs</button>
+      <button className="back-btn" onClick={onBack}><Ic n="back" size={14} /> {t("backToJobs")}</button>
 
       <div className="card" style={{ padding: 14, borderLeft: `4px solid ${project ? "var(--purple)" : "var(--lime)"}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div className="hd-bebas" style={{ fontSize: 24, color: "var(--cream)", letterSpacing: 1.5, lineHeight: 1.05 }}>{title}</div>
           <StatusChip status={status} />
         </div>
-        {project && <div className="hd-cond" style={{ fontSize: 12, color: "var(--purple)", letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>● Project</div>}
+        {project && <div className="hd-cond" style={{ fontSize: 12, color: "var(--purple)", letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>● {t("project")}</div>}
         <a href={`https://maps.apple.com/?q=${encodeURIComponent(job.address || "")}`} target="_blank" rel="noreferrer"
           style={{ fontSize: 14, color: "var(--mgr-lt)", display: "block", marginTop: 6, textDecoration: "none" }}>
           <Ic n="pin" size={13} /> {job.address}
@@ -511,7 +605,7 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
         {job.service_type && <div className="hd-bebas" style={{ fontSize: 16, color: "#92B4F4", letterSpacing: 1, marginTop: 6 }}>{job.service_type}</div>}
         {job.notes && (
           <div className="note-box note-mgr" style={{ marginTop: 8 }}>
-            <div className="note-label" style={{ color: "var(--leaf)" }}>Manager Notes</div>
+            <div className="note-label" style={{ color: "var(--leaf)" }}>{t("managerNotes")}</div>
             <div style={{ fontSize: 13 }}>{job.notes}</div>
           </div>
         )}
@@ -522,7 +616,7 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
         <div className="card" style={{ padding: 14, textAlign: "center" }}>
           <div className="timer-big">{fmtClock(liveSecs)}</div>
           <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)", letterSpacing: 2, textTransform: "uppercase", marginTop: 4 }}>
-            {status === "in_progress" && startedAt ? "Running" : "Paused"}
+            {status === "in_progress" && startedAt ? t("running") : t("paused")}
           </div>
         </div>
       )}
@@ -530,28 +624,28 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
       {/* MOWING CHECKLIST */}
       {mowing && (
         <>
-          <div className="section-hd">Arrival Checklist</div>
+          <div className="section-hd">{t("arrivalChecklist")}</div>
           <div className={"check-row" + (checklist.walkthrough ? " done" : "")} onClick={() => toggle("walkthrough")}>
             <div className="check-box">{checklist.walkthrough && <Ic n="check" size={16} color="#fff" />}</div>
-            <span className="check-label">Property walk-through</span>
+            <span className="check-label">{t("propertyWalkthrough")}</span>
           </div>
 
           <div className="check-row" style={{ flexDirection: "column", alignItems: "stretch", cursor: "default" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span className="check-label">Document existing damage</span>
-              <span className="check-opt">optional</span>
+              <span className="check-label">{t("documentDamage")}</span>
+              <span className="check-opt">{t("optional")}</span>
             </div>
             <div style={{ marginTop: 10 }}>
               <PhotoStrip photos={photos} kind="damage" onAdd={addPhotos} onRemove={removePhoto}
-                label="Damage photos" optional />
-              <textarea className="input" placeholder="Notes about existing damage…" style={{ height: 64, fontSize: 14 }}
+                label={t("damagePhotos")} optional />
+              <textarea className="input" placeholder={t("damageNotePlaceholder")} style={{ height: 64, fontSize: 14 }}
                 value={damageNote} onChange={(e) => setDamageNote(e.target.value)} />
             </div>
           </div>
 
           <div style={{ marginTop: 4 }}>
             <PhotoStrip photos={photos} kind="before" onAdd={addPhotos} onRemove={removePhoto}
-              label="Before photo" optional />
+              label={t("beforePhoto")} optional />
           </div>
         </>
       )}
@@ -559,25 +653,25 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
       {/* NON-MOWING simple photos */}
       {!mowing && (
         <div style={{ marginTop: 4 }}>
-          <div className="section-hd">Photos</div>
-          <PhotoStrip photos={photos} kind="before" onAdd={addPhotos} onRemove={removePhoto} label="Photos" optional />
+          <div className="section-hd">{t("photos")}</div>
+          <PhotoStrip photos={photos} kind="before" onAdd={addPhotos} onRemove={removePhoto} label={t("photos")} optional />
         </div>
       )}
 
       {/* START / END */}
-      <div className="section-hd">Time</div>
+      <div className="section-hd">{t("time")}</div>
       {!started && (
         <button className="btn btn-lime" onClick={startJob}>
-          <Ic n="play" size={16} style={{ marginRight: 8, verticalAlign: -2 }} />START JOB
+          <Ic n="play" size={16} style={{ marginRight: 8, verticalAlign: -2 }} />{t("startJob")}
         </button>
       )}
       {status === "in_progress" && startedAt && (
         <button className="btn" style={{ background: "var(--warn)", color: "var(--earth)" }} onClick={endJob}>
-          <Ic n="stop" size={16} style={{ marginRight: 8, verticalAlign: -2 }} />END JOB
+          <Ic n="stop" size={16} style={{ marginRight: 8, verticalAlign: -2 }} />{t("endJob")}
         </button>
       )}
       {ended && (
-        <button className="btn btn-ghost btn-sm" onClick={startJob} style={{ marginBottom: 4 }}>RESUME TIMER</button>
+        <button className="btn btn-ghost btn-sm" onClick={startJob} style={{ marginBottom: 4 }}>{t("resumeTimer")}</button>
       )}
 
       {/* AFTER PHOTO + FINALIZE (after ended) */}
@@ -585,18 +679,18 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
         <>
           <div style={{ marginTop: 14 }}>
             <PhotoStrip photos={photos} kind="after" onAdd={addPhotos} onRemove={removePhoto}
-              label="After photo" optional={mowing} />
+              label={t("afterPhoto")} optional={mowing} />
           </div>
-          <textarea className="input" placeholder="Completion notes (optional)…" style={{ height: 64, fontSize: 14, marginBottom: 10 }}
+          <textarea className="input" placeholder={t("completionNotes")} style={{ height: 64, fontSize: 14, marginBottom: 10 }}
             value={finalNote} onChange={(e) => setFinalNote(e.target.value)} />
           <button className="btn" disabled={busy || uploading}
             style={{ background: project ? "var(--purple)" : "var(--lime)", color: project ? "#fff" : "var(--earth)" }}
             onClick={finalize}>
-            {busy ? "Saving…" : project ? "DONE FOR TODAY" : "MARK COMPLETE"}
+            {busy ? t("saving") : project ? t("doneForToday") : t("markComplete")}
           </button>
         </>
       )}
-      {uploading && <div className="hd-cond" style={{ textAlign: "center", color: "var(--stone)", fontSize: 12, marginTop: 8 }}><span className="spinner" /> Uploading photo…</div>}
+      {uploading && <div className="hd-cond" style={{ textAlign: "center", color: "var(--stone)", fontSize: 12, marginTop: 8 }}><span className="spinner" /> {t("uploadingPhoto")}</div>}
     </div>
   );
 }
@@ -605,6 +699,8 @@ function CrewJobDetail({ job, crew, onBack, onChanged }) {
    CREW HOME
    =================================================================== */
 function CrewHome({ crew, onLogout }) {
+  const t = useT();
+  const { lang } = useLang();
   const mowing = isMowing(crew);
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -630,10 +726,10 @@ function CrewHome({ crew, onLogout }) {
       <div className="screen">
         <div className="topbar">
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span className="topbar-title">CREW {crew}</span>
-            <span className="pill">{mowing ? "Mowing" : "Crew"}</span>
+            <span className="topbar-title">{t("crew").toUpperCase()} {crew}</span>
+            <span className="pill">{mowing ? t("mowing") : t("crew")}</span>
           </div>
-          <button className="logout" onClick={onLogout}>Sign out</button>
+          <button className="logout" onClick={onLogout}>{t("signOut")}</button>
         </div>
         <div className="content">
           <CrewJobDetail job={fresh} crew={crew} onBack={() => setOpen(null)} onChanged={load} />
@@ -649,15 +745,16 @@ function CrewHome({ crew, onLogout }) {
     <div className="screen">
       <div className="topbar">
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span className="topbar-title">CREW {crew}</span>
-          <span className="pill"><Ic n="truck" size={12} /> {mowing ? "Mowing" : "Crew"}</span>
+          <span className="topbar-title">{t("crew").toUpperCase()} {crew}</span>
+          <span className="pill"><Ic n="truck" size={12} /> {mowing ? t("mowing") : t("crew")}</span>
         </div>
-        <button className="logout" onClick={onLogout}>Sign out</button>
+        <button className="logout" onClick={onLogout}>{t("signOut")}</button>
       </div>
 
       <div className="content">
-        <div style={{ marginBottom: 14 }}>
-          <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", letterSpacing: 1, textTransform: "uppercase" }}>{prettyDate(today)}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 8 }}>
+          <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", letterSpacing: 1, textTransform: "uppercase" }}>{prettyDate(today, LOCALES[lang])}</div>
+          <LangToggle />
         </div>
 
         {loading ? (
@@ -665,17 +762,17 @@ function CrewHome({ crew, onLogout }) {
         ) : jobs.length === 0 ? (
           <div className="empty">
             <Ic n="map" size={40} color="var(--moss)" style={{ marginBottom: 10 }} />
-            <div className="hd-cond">No jobs assigned today</div>
+            <div className="hd-cond">{t("noJobsToday")}</div>
           </div>
         ) : (
           <>
-            <div className="section-hd">To Do — {active.length}</div>
+            <div className="section-hd">{t("toDo")} — {active.length}</div>
             {active.map((job) => <CrewJobCard key={job.id} job={job} onOpen={() => setOpen(job)} />)}
-            {active.length === 0 && <div className="hd-cond" style={{ color: "var(--stone)", fontSize: 13, marginBottom: 16 }}>All caught up! 🎉</div>}
+            {active.length === 0 && <div className="hd-cond" style={{ color: "var(--stone)", fontSize: 13, marginBottom: 16 }}>{t("allCaughtUp")}</div>}
 
             {done.length > 0 && (
               <>
-                <div className="section-hd" style={{ marginTop: 18 }}>Done — {done.length}</div>
+                <div className="section-hd" style={{ marginTop: 18 }}>{t("done")} — {done.length}</div>
                 {done.map((job) => <CrewJobCard key={job.id} job={job} onOpen={() => setOpen(job)} done />)}
               </>
             )}
@@ -687,6 +784,7 @@ function CrewHome({ crew, onLogout }) {
 }
 
 function CrewJobCard({ job, onOpen, done }) {
+  const t = useT();
   const project = job.is_project;
   const color = job.status === "completed" || job.status === "done_for_today"
     ? "var(--leaf)" : job.status === "in_progress" ? "var(--purple)" : project ? "var(--purple)" : "var(--lime)";
@@ -695,18 +793,18 @@ function CrewJobCard({ job, onOpen, done }) {
       <div style={{ padding: "12px 14px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 4 }}>
           <div className="hd-bebas" style={{ fontSize: 20, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.05 }}>
-            {job.client_name || job.address || "Job"}
+            {job.client_name || job.address || t("job")}
           </div>
           <StatusChip status={job.status} />
         </div>
-        {project && <div className="hd-cond" style={{ fontSize: 11, color: "var(--purple)", letterSpacing: 1, textTransform: "uppercase" }}>● Project</div>}
+        {project && <div className="hd-cond" style={{ fontSize: 11, color: "var(--purple)", letterSpacing: 1, textTransform: "uppercase" }}>● {t("project")}</div>}
         <div style={{ fontSize: 13, color: "var(--mgr-lt)" }}><Ic n="pin" size={12} /> {job.address}</div>
         {job.service_type && <div className="hd-bebas" style={{ fontSize: 14, color: "#92B4F4", letterSpacing: 1, marginTop: 4 }}>{job.service_type}</div>}
         {job.notes && <div style={{ fontSize: 12, color: "var(--stone)", marginTop: 4 }}>{job.notes}</div>}
         {!done && (
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, color: color }}>
             <span className="hd-cond" style={{ fontSize: 13, letterSpacing: 1, textTransform: "uppercase", fontWeight: 700 }}>
-              {job.status === "in_progress" ? "Continue" : "Open job"}
+              {job.status === "in_progress" ? t("continueJob") : t("openJob")}
             </span>
             <Ic n="arrow" size={15} />
           </div>
@@ -1499,9 +1597,16 @@ function ManagerHome({ onLogout }) {
 export default function App() {
   const [screen, setScreen] = useState("login"); // login | crew | manager
   const [crew, setCrew] = useState(null);
+  const [lang, setLangState] = useState(() => {
+    try { return localStorage.getItem("tf_lang") || "en"; } catch { return "en"; }
+  });
+  const setLang = (l) => {
+    setLangState(l);
+    try { localStorage.setItem("tf_lang", l); } catch { /* ignore */ }
+  };
 
   return (
-    <>
+    <LangContext.Provider value={{ lang, setLang }}>
       <style>{CSS}</style>
       <div className="app">
         {screen === "login" && (
@@ -1516,6 +1621,6 @@ export default function App() {
           <ManagerHome onLogout={() => setScreen("login")} />
         )}
       </div>
-    </>
+    </LangContext.Provider>
   );
 }
