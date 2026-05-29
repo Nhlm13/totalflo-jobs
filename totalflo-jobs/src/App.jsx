@@ -833,6 +833,7 @@ function BuildSchedule({ onDone }) {
   const [crews, setCrews] = useState({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [optimizing, setOptimizing] = useState(false);
 
   useEffect(() => {
     supabase.from("employees").select("*").eq("active", true).order("name").then(({ data }) => setEmployees(data || []));
@@ -856,6 +857,42 @@ function BuildSchedule({ onDone }) {
   const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, recurUntil: "" }]);
   const setStop = (key, patch) => setStops((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
   const rmStop = (key) => setStops((s) => s.filter((st) => st.key !== key));
+  const moveStop = (key, dir) => setStops((s) => {
+    const i = s.findIndex((x) => x.key === key); const j = i + dir;
+    if (i < 0 || j < 0 || j >= s.length) return s;
+    const c = [...s]; [c[i], c[j]] = [c[j], c[i]]; return c;
+  });
+
+  // Reorder stops into an efficient nearest-first route. Geocodes any
+  // free-typed addresses first (politely, ~1/sec for Nominatim).
+  const optimizeRoute = async () => {
+    const haveAddr = stops.filter((s) => s.address.trim());
+    if (haveAddr.length < 3) { setMsg("Add at least 3 stops to optimize the route."); return; }
+    setOptimizing(true); setMsg("");
+    const resolved = [];
+    for (const s of stops) {
+      let lat = s.client?.lat ?? s.lat ?? null, lng = s.client?.lng ?? s.lng ?? null;
+      if (lat == null && s.address.trim()) {
+        const g = await geocode(s.address);
+        if (g) { lat = g.lat; lng = g.lng; }
+        await new Promise((r) => setTimeout(r, 1100));
+      }
+      resolved.push({ ...s, lat, lng });
+    }
+    const kx = Math.cos((MAP_CENTER[0] * Math.PI) / 180);
+    const d2 = (a, b) => { const dy = a.lat - b.lat, dx = (a.lng - b.lng) * kx; return dy * dy + dx * dx; };
+    const todo = resolved.filter((s) => s.lat != null);
+    const noGeo = resolved.filter((s) => s.lat == null);
+    const out = []; let cur = { lat: MAP_CENTER[0], lng: MAP_CENTER[1] };
+    while (todo.length) {
+      let bi = 0, bd = Infinity;
+      todo.forEach((s, i) => { const d = d2(cur, s); if (d < bd) { bd = d; bi = i; } });
+      cur = todo.splice(bi, 1)[0]; out.push(cur);
+    }
+    setStops([...out, ...noGeo]);
+    setOptimizing(false);
+    if (noGeo.length) setMsg(`Optimized. ${noGeo.length} stop(s) had no location and were left at the end.`);
+  };
 
   const save = async () => {
     if (!crew) { setMsg("Pick a crew."); return; }
@@ -880,11 +917,13 @@ function BuildSchedule({ onDone }) {
     let stopIndex = 0;
     let total = 0;
     for (const s of valid) {
-      let lat = s.client?.lat ?? null, lng = s.client?.lng ?? null;
+      let lat = s.client?.lat ?? s.lat ?? null, lng = s.client?.lng ?? s.lng ?? null;
       if (lat == null) { const g = await geocode(s.address); if (g) { lat = g.lat; lng = g.lng; } }
       const dates = s.recurring
         ? eachDayInRange(date, s.recurUntil, new Set([startDow]))   // same weekday each week
         : [date];
+      // recurring stops share a series_id so they can be edited/deleted as a group
+      const seriesId = s.recurring ? crypto.randomUUID() : null;
       for (const d of dates) {
         await supabase.from("jobs").insert({
           crew_number: Number(crew),
@@ -898,6 +937,7 @@ function BuildSchedule({ onDone }) {
           members,
           status: "scheduled",
           sort_order: stopIndex,
+          series_id: seriesId,
         });
         total++;
       }
@@ -945,7 +985,13 @@ function BuildSchedule({ onDone }) {
             <div key={s.key} className="stop-row">
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <span className="hd-bebas" style={{ fontSize: 16, color: "var(--mgr-lt)", letterSpacing: 1 }}>STOP {i + 1}</span>
-                <button className="x-btn" onClick={() => rmStop(s.key)}>✕</button>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="x-btn" title="Move up" disabled={i === 0}
+                    style={{ opacity: i === 0 ? 0.3 : 1 }} onClick={() => moveStop(s.key, -1)}>▲</button>
+                  <button className="x-btn" title="Move down" disabled={i === stops.length - 1}
+                    style={{ opacity: i === stops.length - 1 ? 0.3 : 1 }} onClick={() => moveStop(s.key, 1)}>▼</button>
+                  <button className="x-btn" title="Remove" onClick={() => rmStop(s.key)}>✕</button>
+                </div>
               </div>
               <span className="label">Address</span>
               <div style={{ marginBottom: 9 }}>
@@ -980,9 +1026,16 @@ function BuildSchedule({ onDone }) {
               )}
             </div>
           ))}
-          <button className="btn btn-ghost btn-sm" onClick={addStop} style={{ marginBottom: 16 }}>
+          <button className="btn btn-ghost btn-sm" onClick={addStop} style={{ marginBottom: 10 }}>
             <Ic n="plus" size={15} style={{ marginRight: 6, verticalAlign: -2 }} />ADD STOP
           </button>
+          {stops.length >= 2 && (
+            <button className="btn btn-ghost btn-sm" onClick={optimizeRoute} disabled={optimizing} style={{ marginBottom: 16 }}>
+              {optimizing
+                ? <><span className="spinner" /> Optimizing…</>
+                : <><Ic n="pin" size={15} style={{ marginRight: 6, verticalAlign: -2 }} />OPTIMIZE ROUTE</>}
+            </button>
+          )}
 
           {msg && <div className="error" style={{ marginBottom: 12 }}>{msg}</div>}
           <button className="btn btn-mgr" disabled={busy} onClick={save}>
@@ -1084,6 +1137,9 @@ function ManagerJobs() {
   const [loading, setLoading] = useState(true);
   const [carry, setCarry] = useState(null);     // job being carried over
   const [carryDate, setCarryDate] = useState(addDays(todayStr(), 1));
+  const [series, setSeries] = useState(null);    // recurring job whose series is being edited
+  const [seriesSvc, setSeriesSvc] = useState("");
+  const [seriesNotes, setSeriesNotes] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1107,6 +1163,23 @@ function ManagerJobs() {
     await supabase.from("jobs").delete().eq("id", job.id); load();
   };
 
+  const openSeries = (job) => { setSeries(job); setSeriesSvc(job.service_type || ""); setSeriesNotes(job.notes || ""); };
+  const doSeriesUpdate = async () => {
+    // apply to this occurrence and every later one in the series
+    await supabase.from("jobs")
+      .update({ service_type: seriesSvc || null, notes: seriesNotes || null })
+      .eq("series_id", series.series_id).gte("date", series.date);
+    setSeries(null); load();
+  };
+  const doSeriesDelete = async (scope) => {
+    if (!window.confirm(scope === "all"
+      ? "Delete the ENTIRE recurring series, including past occurrences?"
+      : "Delete this occurrence and all upcoming ones in the series?")) return;
+    let q = supabase.from("jobs").delete().eq("series_id", series.series_id);
+    if (scope === "future") q = q.gte("date", series.date);
+    await q; setSeries(null); load();
+  };
+
   const byStatus = (s) => jobs.filter((j) => s.includes(j.status));
   const scheduled = byStatus(["scheduled"]);
   const progress = byStatus(["in_progress"]);
@@ -1125,6 +1198,7 @@ function ManagerJobs() {
           <div className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", marginTop: 3, letterSpacing: .5 }}>
             Crew {job.crew_number}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
             {job.is_project && <span style={{ color: "var(--purple)" }}> · Project</span>}
+            {job.series_id && <span style={{ color: "var(--lime)" }}> · ↻ Recurring</span>}
           </div>
           {job.service_type && <div style={{ fontSize: 12, color: "#92B4F4", marginTop: 2 }}>{job.service_type}</div>}
           {job.elapsed_seconds > 0 && <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)", marginTop: 3 }}><Ic n="clock" size={12} /> {fmtDuration(job.elapsed_seconds)}</div>}
@@ -1132,6 +1206,10 @@ function ManagerJobs() {
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <StatusChip status={job.status} />
           <div style={{ display: "flex", gap: 6, marginTop: 8, justifyContent: "flex-end" }}>
+            {job.series_id && (
+              <button className="x-btn" title="Edit recurring series" style={{ background: "var(--mgr)", width: 30, height: 30, color: "var(--cream)", fontSize: 16 }}
+                onClick={() => openSeries(job)}>↻</button>
+            )}
             {job.status !== "completed" && job.status !== "done_for_today" && (
               <button className="x-btn" title="Carry over" style={{ background: "var(--moss)", width: 30, height: 30 }}
                 onClick={() => { setCarry(job); setCarryDate(addDays(date, 1)); }}>
@@ -1181,6 +1259,26 @@ function ManagerJobs() {
             <div style={{ display: "flex", gap: 8 }}>
               <button className="btn btn-ghost btn-sm" onClick={() => setCarry(null)}>Cancel</button>
               <button className="btn btn-mgr btn-sm" onClick={doCarry}>Move Job</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {series && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.65)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setSeries(null)}>
+          <div className="card" style={{ width: "100%", maxWidth: 380, padding: 18, margin: 0 }} onClick={(e) => e.stopPropagation()}>
+            <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1, marginBottom: 4 }}>↻ RECURRING SERIES</div>
+            <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 14 }}>{series.client_name || series.address} · repeats weekly</div>
+            <span className="label">What needs to be done</span>
+            <input className="input" style={{ marginBottom: 10 }} value={seriesSvc} onChange={(e) => setSeriesSvc(e.target.value)} />
+            <span className="label">Notes for crew</span>
+            <textarea className="input" style={{ height: 60, fontSize: 14, marginBottom: 10 }} value={seriesNotes} onChange={(e) => setSeriesNotes(e.target.value)} />
+            <button className="btn btn-mgr btn-sm" onClick={doSeriesUpdate}>Apply to this &amp; all upcoming</button>
+            <div style={{ borderTop: "1px solid var(--moss)", marginTop: 14, paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => doSeriesDelete("future")}>Delete this &amp; upcoming</button>
+              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => doSeriesDelete("all")}>Delete entire series</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSeries(null)}>Cancel</button>
             </div>
           </div>
         </div>
@@ -1594,6 +1692,107 @@ function CrewsTab() {
 /* ===================================================================
    MANAGER HOME (tabbed)
    =================================================================== */
+function HoursTab() {
+  const [from, setFrom] = useState(addDays(todayStr(), -6));
+  const [to, setTo] = useState(todayStr());
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("jobs")
+      .select("members,elapsed_seconds,date")
+      .gte("date", from).lte("date", to);
+    const agg = {}; let unassigned = 0;
+    (data || []).forEach((j) => {
+      const secs = j.elapsed_seconds || 0;
+      if (!secs) return;
+      const mem = Array.isArray(j.members) ? j.members : [];
+      if (mem.length === 0) { unassigned += secs; return; }
+      mem.forEach((name) => {
+        if (!agg[name]) agg[name] = { name, secs: 0, jobs: 0 };
+        agg[name].secs += secs; agg[name].jobs += 1;
+      });
+    });
+    const list = Object.values(agg).sort((a, b) => b.secs - a.secs);
+    if (unassigned > 0) list.push({ name: "(Unassigned crew)", secs: unassigned, jobs: 0, unassigned: true });
+    setRows(list); setLoading(false);
+  }, [from, to]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const totalSecs = rows.reduce((a, r) => a + r.secs, 0);
+
+  const exportCsv = () => {
+    const out = [["Employee", "Hours (decimal)", "H:M", "Jobs"]];
+    rows.forEach((r) => out.push([r.name, (r.secs / 3600).toFixed(2), fmtDuration(r.secs), r.unassigned ? "" : r.jobs]));
+    out.push(["TOTAL", (totalSecs / 3600).toFixed(2), fmtDuration(totalSecs), ""]);
+    const csv = out.map((row) => row.map((f) => `"${String(f).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `labor-hours_${from}_to_${to}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const quick = [
+    ["This week", () => { const dow = new Date(todayStr() + "T12:00:00").getDay(); setFrom(addDays(todayStr(), -((dow + 6) % 7))); setTo(todayStr()); }],
+    ["Last 7 days", () => { setFrom(addDays(todayStr(), -6)); setTo(todayStr()); }],
+    ["Last 14", () => { setFrom(addDays(todayStr(), -13)); setTo(todayStr()); }],
+  ];
+
+  return (
+    <div style={{ animation: "fadeUp .25s ease both" }}>
+      <div className="section-hd">Labor Hours</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <div style={{ flex: 1 }}>
+          <span className="label">From</span>
+          <input className="input" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <span className="label">To</span>
+          <input className="input" type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {quick.map(([l, fn]) => (
+          <button key={l} className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "8px 12px" }} onClick={fn}>{l}</button>
+        ))}
+      </div>
+
+      {loading ? <div className="empty"><span className="spinner" /></div> : rows.length === 0 ? (
+        <div className="empty" style={{ paddingTop: 20 }}>
+          <Ic n="clock" size={34} color="var(--moss)" style={{ marginBottom: 8 }} />
+          <div className="hd-cond">No tracked hours in this range</div>
+        </div>
+      ) : (
+        <>
+          <div className="card" style={{ padding: 14, marginBottom: 12, textAlign: "center" }}>
+            <div className="timer-big" style={{ fontSize: 30 }}>{(totalSecs / 3600).toFixed(1)}h</div>
+            <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)", letterSpacing: 1, textTransform: "uppercase" }}>Total labor hours</div>
+          </div>
+          {rows.map((r) => (
+            <div key={r.name} className="card" style={{ padding: "11px 13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div className="hd-bebas" style={{ fontSize: 17, color: r.unassigned ? "var(--stone)" : "var(--cream)", letterSpacing: 1 }}>{r.name}</div>
+                {!r.unassigned && <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)" }}>{r.jobs} job{r.jobs !== 1 ? "s" : ""}</div>}
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="hd-bebas" style={{ fontSize: 19, color: "var(--lime)", letterSpacing: 1 }}>{(r.secs / 3600).toFixed(2)}h</div>
+                <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>{fmtDuration(r.secs)}</div>
+              </div>
+            </div>
+          ))}
+          <button className="btn btn-mgr" style={{ marginTop: 14 }} onClick={exportCsv}>
+            <Ic n="list" size={15} style={{ marginRight: 6, verticalAlign: -2 }} />EXPORT CSV
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ManagerHome({ onLogout }) {
   const [tab, setTab] = useState("build");
   const [flash, setFlash] = useState("");
@@ -1602,6 +1801,7 @@ function ManagerHome({ onLogout }) {
     { id: "jobs", label: "Jobs", icon: "map" },
     { id: "projects", label: "Projects", icon: "folder" },
     { id: "crews", label: "Crews", icon: "user" },
+    { id: "hours", label: "Hours", icon: "clock" },
   ];
   const onSchedDone = (m) => { setFlash(m); setTab("jobs"); };
 
@@ -1617,6 +1817,7 @@ function ManagerHome({ onLogout }) {
         {tab === "jobs" && <ManagerJobs />}
         {tab === "projects" && <ProjectsTab />}
         {tab === "crews" && <CrewsTab />}
+        {tab === "hours" && <HoursTab />}
       </div>
       <div className="tabbar">
         {tabs.map((t) => (
