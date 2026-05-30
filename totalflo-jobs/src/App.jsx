@@ -1362,35 +1362,37 @@ function FullScreenMap({ jobs, onClose }) {
 
   useEffect(() => {
     if (!ready || !elRef.current || mapRef.current) return;
-    mapRef.current = window.L.map(elRef.current, { preferCanvas: true }).setView(shopPt, 11);
-    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(mapRef.current);
-    layerRef.current = window.L.layerGroup().addTo(mapRef.current);
-    setTimeout(() => mapRef.current && mapRef.current.invalidateSize(), 100);
-    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+    const L = window.L;
+    // Start framed on Massachusetts.
+    mapRef.current = L.map(elRef.current, { preferCanvas: true }).setView([42.15, -71.65], 8);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(mapRef.current);
+    layerRef.current = L.layerGroup().addTo(mapRef.current);
+    // Leaflet needs a correctly-sized container; fix size, then frame the state.
+    const frame = () => {
+      if (!mapRef.current) return;
+      mapRef.current.invalidateSize();
+      mapRef.current.fitBounds([[41.2, -73.6], [42.95, -69.85]], { padding: [10, 10] });
+    };
+    const t1 = setTimeout(frame, 120);
+    const t2 = setTimeout(frame, 450);
+    return () => { clearTimeout(t1); clearTimeout(t2); if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
   }, [ready]);
 
   const statusKey = (j) => (j.status === "completed" || j.status === "done_for_today") ? "complete"
     : j.status === "in_progress" ? "in_progress" : "scheduled";
 
-  // frame all properties once when they first load (not on every toggle)
-  const fittedRef = useRef(false);
-  useEffect(() => {
-    if (fittedRef.current || !mapRef.current || !clients.length) return;
-    const pts = clients.filter((c) => c.lat != null).map((c) => [c.lat, c.lng]);
-    if (pts.length) { try { mapRef.current.fitBounds(pts, { padding: [40, 40], maxZoom: 13 }); fittedRef.current = true; } catch (e) {} }
-  }, [clients, ready]);
+  // guard against bad/missing coordinates (0/0, swapped lat-lng, etc.)
+  const okPt = (lat, lng) => lat != null && lng != null && lat > 24 && lat < 50 && lng > -125 && lng < -66;
 
   useEffect(() => {
     if (!mapRef.current || !layerRef.current) return;
     const L = window.L;
     layerRef.current.clearLayers();
-    const pts = [];
 
     // all client properties (blue)
     if (show.props) {
       clients.forEach((c) => {
-        if (c.lat == null) return;
-        pts.push([c.lat, c.lng]);
+        if (!okPt(c.lat, c.lng)) return;
         L.circleMarker([c.lat, c.lng], { radius: 4, fillColor: "#2563eb", color: "#fff", weight: 1, opacity: 1, fillOpacity: 0.85 })
           .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:140px;"><div style="font-weight:700;font-size:13px;color:#1c2414;">${c.name || ""}</div><div style="font-size:11px;color:#666;">${c.address || ""}</div></div>`)
           .addTo(layerRef.current);
@@ -1400,17 +1402,16 @@ function FullScreenMap({ jobs, onClose }) {
     // today's jobs by status (respecting the crew filter)
     const fj = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
     fj.forEach((job) => {
-      if (job.lat == null) return;
+      if (!okPt(job.lat, job.lng)) return;
       const key = statusKey(job);
       if (!show[key]) return;
       const color = key === "complete" ? "#22c55e" : key === "in_progress" ? "#9b59b6" : "#e05540";
-      pts.push([job.lat, job.lng]);
       L.circleMarker([job.lat, job.lng], { radius: 8, fillColor: color, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.95 })
         .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:150px;"><div style="font-weight:700;font-size:14px;color:#1c2414;">${job.client_name || job.address || ""}</div><div style="font-size:12px;color:#666;">${job.address || ""}</div><div style="font-size:11px;margin-top:4px;color:${color};font-weight:700;">Crew ${job.crew_number} · ${key === "complete" ? "Complete" : key === "in_progress" ? "In progress" : "Scheduled"}</div><a href="https://maps.apple.com/?q=${encodeURIComponent(job.address || "")}" target="_blank" rel="noreferrer" style="font-size:12px;color:#2f6f4f;font-weight:700;display:inline-block;margin-top:5px;text-decoration:none;">→ Directions</a></div>`)
         .addTo(layerRef.current);
     });
 
-    if (shopPt) {
+    if (okPt(shopPt[0], shopPt[1])) {
       L.marker(shopPt, { icon: L.divIcon({ className: "", html: `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;background:#1c2414;border:2px solid #6ab820;font-size:14px;">🏠</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) })
         .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;"><div style="font-weight:700;font-size:14px;color:#1c2414;">Shop / Yard</div><div style="font-size:12px;color:#666;">${SHOP.address}</div></div>`)
         .addTo(layerRef.current);
@@ -1418,7 +1419,7 @@ function FullScreenMap({ jobs, onClose }) {
   }, [clients, show, crew, jobs, shopPt, ready]);
 
   const crewNums = [...new Set(jobs.map((j) => j.crew_number))].sort((a, b) => a - b);
-  const counts = { props: clients.length };
+  const counts = { props: clients.filter((c) => okPt(c.lat, c.lng)).length };
   const fjAll = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
   ["scheduled", "in_progress", "complete"].forEach((k) => (counts[k] = fjAll.filter((j) => statusKey(j) === k).length));
 
