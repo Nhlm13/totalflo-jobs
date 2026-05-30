@@ -250,7 +250,7 @@ ${FONT}
 }
 body{background:var(--bg);font-family:'Barlow',sans-serif;color:var(--cream);-webkit-tap-highlight-color:transparent;}
 .app{max-width:480px;min-height:100dvh;margin:0 auto;background:var(--bg);display:flex;flex-direction:column;position:relative;}
-@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1}}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 @keyframes spin{to{transform:rotate(360deg)}}
