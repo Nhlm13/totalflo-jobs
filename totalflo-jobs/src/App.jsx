@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "./supabaseClient.js";
 
 /* =====================================================================
@@ -1326,6 +1327,24 @@ function JobsMap({ jobs }) {
 const MODAL_WRAP = { position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 600, display: "flex", alignItems: "flex-end", justifyContent: "center" };
 const MODAL_CARD = { width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", margin: 0, padding: 18, borderRadius: "16px 16px 0 0" };
 
+// Renders a bottom-sheet modal as a direct child of <body>, so it always
+// anchors to the screen and is never trapped by an ancestor's transform/overflow.
+function Modal({ onClose, children }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+  return createPortal(
+    <div style={MODAL_WRAP} onClick={onClose}>
+      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 
 // Single-visit editor: move the date, swap members, skip/un-skip, delete, view photos.
 function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
@@ -1352,8 +1371,7 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
   const groups = [["before", "Before"], ["after", "After"], ["damage", "Existing damage"], ["other", "Other"]];
 
   return (
-    <div style={MODAL_WRAP} onClick={onClose}>
-      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div className="hd-bebas" style={{ fontSize: 22, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.1 }}>{job.client_name || job.address || "Visit"}</div>
           <button className="x-btn" onClick={onClose}>✕</button>
@@ -1415,8 +1433,7 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
             );
           })}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1504,8 +1521,7 @@ function SeriesEditor({ seriesId, fromDate, onClose, onChanged }) {
   };
 
   return (
-    <div style={MODAL_WRAP} onClick={onClose}>
-      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div className="hd-bebas" style={{ fontSize: 20, color: "var(--lime)", letterSpacing: 1 }}>↻ RECURRING SERIES</div>
           <button className="x-btn" onClick={onClose}>✕</button>
@@ -1566,8 +1582,7 @@ function SeriesEditor({ seriesId, fromDate, onClose, onChanged }) {
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={del} style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete {scope === "all" ? "entire series" : "this & upcoming"}</button>
           </>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -1673,8 +1688,7 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
   const srcCrewOpts = [{ value: "", label: "All crews" }, ...ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))];
 
   return (
-    <div style={MODAL_WRAP} onClick={onClose}>
-      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>RESCHEDULE / WEATHER DAY</div>
           <button className="x-btn" onClick={onClose}>✕</button>
@@ -1784,8 +1798,7 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
             </div>
           </>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -2615,8 +2628,7 @@ function PropertyEditor({ client, onClose, onSaved }) {
   };
 
   return (
-    <div style={MODAL_WRAP} onClick={onClose}>
-      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>{isNew ? "ADD PROPERTY" : "EDIT PROPERTY"}</div>
           <button className="x-btn" onClick={onClose}>✕</button>
@@ -2644,8 +2656,7 @@ function PropertyEditor({ client, onClose, onSaved }) {
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
