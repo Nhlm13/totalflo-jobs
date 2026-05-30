@@ -15,6 +15,10 @@ const isMowing = (n) => MOWING_CREWS.includes(Number(n));
 const MAP_CENTER = [42.13, -71.05];
 const MAP_ZOOM = 11;
 
+// The yard — routes start and end here. Coordinates are resolved live by
+// geocoding the address; these are a verified fallback (Southborough town center).
+const SHOP = { address: "179 Boston Rd, Southborough, MA 01772", lat: 42.3056, lng: -71.5245 };
+
 /* =============================== i18n ==============================
    Crew-facing screens are translated. Each device remembers its choice.
    Manager screens stay in English.
@@ -957,12 +961,20 @@ function BuildSchedule({ onDone }) {
     const c = [...s]; [c[i], c[j]] = [c[j], c[i]]; return c;
   });
 
-  // Reorder stops into an efficient nearest-first route. Geocodes any
-  // free-typed addresses first (politely, ~1/sec for Nominatim).
+  // Reorder stops into an efficient route that starts AND ends at the shop.
+  // Still straight-line ("as the crow flies"): nearest-neighbor from the yard,
+  // then a 2-opt pass that minimizes the full loop shop -> stops -> shop.
   const optimizeRoute = async () => {
     const haveAddr = stops.filter((s) => s.address.trim());
     if (haveAddr.length < 3) { setMsg("Add at least 3 stops to optimize the route."); return; }
     setOptimizing(true); setMsg("");
+
+    // resolve the depot (shop) — geocode for accuracy, fall back to stored coords
+    let depot = { lat: SHOP.lat, lng: SHOP.lng };
+    const dg = await geocode(SHOP.address);
+    if (dg) depot = { lat: dg.lat, lng: dg.lng };
+    await new Promise((r) => setTimeout(r, 1100));
+
     const resolved = [];
     for (const s of stops) {
       let lat = s.client?.lat ?? s.lat ?? null, lng = s.client?.lng ?? s.lng ?? null;
@@ -973,22 +985,42 @@ function BuildSchedule({ onDone }) {
       }
       resolved.push({ ...s, lat, lng });
     }
-    const kx = Math.cos((MAP_CENTER[0] * Math.PI) / 180);
+    const kx = Math.cos((depot.lat * Math.PI) / 180);
     const d2 = (a, b) => { const dy = a.lat - b.lat, dx = (a.lng - b.lng) * kx; return dy * dy + dx * dx; };
-    const todo = resolved.filter((s) => s.lat != null);
+    const dist = (a, b) => Math.sqrt(d2(a, b));
     const noGeo = resolved.filter((s) => s.lat == null);
-    const out = []; let cur = { lat: MAP_CENTER[0], lng: MAP_CENTER[1] };
-    while (todo.length) {
+
+    // nearest-neighbor starting from the shop
+    let route = []; let cur = depot;
+    const pool = resolved.filter((s) => s.lat != null);
+    while (pool.length) {
       let bi = 0, bd = Infinity;
-      for (let i = 0; i < todo.length; i++) {
-        const d = d2(cur, todo[i]);
-        if (d < bd) { bd = d; bi = i; }
-      }
-      cur = todo.splice(bi, 1)[0]; out.push(cur);
+      for (let i = 0; i < pool.length; i++) { const d = d2(cur, pool[i]); if (d < bd) { bd = d; bi = i; } }
+      cur = pool.splice(bi, 1)[0]; route.push(cur);
     }
-    setStops([...out, ...noGeo]);
+
+    // 2-opt: shorten the round trip (shop -> ... -> shop)
+    const tourLen = (r) => {
+      if (!r.length) return 0;
+      let total = dist(depot, r[0]);
+      for (let i = 0; i < r.length - 1; i++) total += dist(r[i], r[i + 1]);
+      return total + dist(r[r.length - 1], depot);
+    };
+    let bestLen = tourLen(route), improved = true, guard = 0;
+    while (improved && guard < 60) {
+      improved = false; guard++;
+      for (let i = 0; i < route.length - 1; i++) {
+        for (let k = i + 1; k < route.length; k++) {
+          const cand = [...route.slice(0, i), ...route.slice(i, k + 1).reverse(), ...route.slice(k + 1)];
+          const len = tourLen(cand);
+          if (len + 1e-9 < bestLen) { route = cand; bestLen = len; improved = true; }
+        }
+      }
+    }
+
+    setStops([...route, ...noGeo]);
     setOptimizing(false);
-    if (noGeo.length) setMsg(`Optimized. ${noGeo.length} stop(s) had no location and were left at the end.`);
+    setMsg(`Optimized as a loop from the shop.${noGeo.length ? ` ${noGeo.length} stop(s) had no location and were left at the end.` : ""}`);
   };
 
   const save = async () => {
@@ -1200,6 +1232,13 @@ function JobsMap({ jobs }) {
   const elRef = useRef(null);
   const mapRef = useRef(null);
   const layerRef = useRef(null);
+  const [shopPt, setShopPt] = useState([SHOP.lat, SHOP.lng]);
+
+  useEffect(() => {
+    let alive = true;
+    geocode(SHOP.address).then((g) => { if (alive && g) setShopPt([g.lat, g.lng]); });
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     if (!ready || !elRef.current || mapRef.current) return;
@@ -1244,8 +1283,26 @@ function JobsMap({ jobs }) {
       );
       marker.addTo(layerRef.current);
     });
+
+    // the shop / yard — fixed start & end of every route
+    if (shopPt) {
+      pts.push(shopPt);
+      window.L.marker(shopPt, {
+        icon: window.L.divIcon({
+          className: "",
+          html: `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;background:#1c2414;border:2px solid #6ab820;font-size:14px;">🏠</div>`,
+          iconSize: [26, 26], iconAnchor: [13, 13],
+        }),
+      }).bindPopup(
+        `<div style="font-family:'Barlow Condensed',sans-serif;min-width:150px;">
+          <div style="font-weight:700;font-size:14px;color:#1c2414;">Shop / Yard</div>
+          <div style="font-size:12px;color:#666;margin-top:2px;">${SHOP.address}</div>
+          <div style="font-size:11px;margin-top:4px;color:#2f6f4f;font-weight:700;">Routes start &amp; end here</div>
+        </div>`
+      ).addTo(layerRef.current);
+    }
     if (pts.length) { try { mapRef.current.fitBounds(pts, { padding: [40, 40], maxZoom: 14 }); } catch (e) {} }
-  }, [jobs]);
+  }, [jobs, shopPt]);
 
   return (
     <div style={{ position: "relative" }}>
@@ -1257,6 +1314,9 @@ function JobsMap({ jobs }) {
             <span style={{ width: 11, height: 11, borderRadius: "50%", background: c, border: "1.5px solid #fff" }} />{l}
           </span>
         ))}
+        <span className="hd-cond" style={{ fontSize: 12, color: "var(--cream)", display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 13 }}>🏠</span>Shop / Yard
+        </span>
       </div>
     </div>
   );
