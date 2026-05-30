@@ -1509,6 +1509,224 @@ function SeriesEditor({ seriesId, fromDate, onClose, onChanged }) {
   );
 }
 
+// Weather-day / bulk reschedule. Move selected jobs to another day (with a
+// live look at what that day already holds), reassign to another crew, or
+// bump a day — and optionally everything after it — forward N days.
+function RescheduleTool({ initialDate, onClose, onChanged }) {
+  const [mode, setMode] = useState("move"); // move | bump
+  const [srcDate, setSrcDate] = useState(initialDate);
+  const [srcCrew, setSrcCrew] = useState("");        // "" = all crews
+  const [srcJobs, setSrcJobs] = useState([]);
+  const [selected, setSelected] = useState(new Set());
+  const [loadingSrc, setLoadingSrc] = useState(true);
+
+  const [tgtDate, setTgtDate] = useState(addDays(initialDate, 1));
+  const [tgtCrew, setTgtCrew] = useState("");        // "" = keep same crew
+  const [placement, setPlacement] = useState("after");
+  const [tgtJobs, setTgtJobs] = useState([]);
+
+  const [bumpDays, setBumpDays] = useState(1);
+  const [bumpFollowing, setBumpFollowing] = useState(false);
+  const [bumpRows, setBumpRows] = useState([]);
+
+  const [crews, setCrews] = useState([]);
+  const [names, setNames] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    supabase.from("crews").select("*").then(({ data }) => setCrews(data || []));
+    supabase.from("clients").select("id,name").then(({ data }) => { const m = {}; (data || []).forEach((c) => (m[c.id] = c.name)); setNames(m); });
+  }, []);
+
+  const loadSrc = useCallback(async () => {
+    setLoadingSrc(true);
+    const { data } = await supabase.from("jobs").select("*").eq("date", srcDate)
+      .in("status", ["scheduled", "in_progress"]).order("crew_number").order("sort_order");
+    let rows = data || [];
+    if (srcCrew) rows = rows.filter((r) => r.crew_number === Number(srcCrew));
+    setSrcJobs(rows);
+    setSelected(new Set(rows.map((r) => r.id)));
+    setLoadingSrc(false);
+  }, [srcDate, srcCrew]);
+  useEffect(() => { loadSrc(); }, [loadSrc]);
+
+  useEffect(() => {
+    if (mode !== "move") return;
+    supabase.from("jobs").select("id,crew_number,status").eq("date", tgtDate)
+      .in("status", ["scheduled", "in_progress", "completed", "done_for_today"])
+      .then(({ data }) => setTgtJobs(data || []));
+  }, [tgtDate, mode, busy]);
+
+  useEffect(() => {
+    if (mode !== "bump") return;
+    let q = supabase.from("jobs").select("id,crew_number,date,status").in("status", ["scheduled", "in_progress"]);
+    q = bumpFollowing ? q.gte("date", srcDate) : q.eq("date", srcDate);
+    q.then(({ data }) => { let rows = data || []; if (srcCrew) rows = rows.filter((r) => r.crew_number === Number(srcCrew)); setBumpRows(rows); });
+  }, [mode, srcDate, srcCrew, bumpFollowing, busy]);
+
+  const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const movingJobs = srcJobs.filter((j) => selected.has(j.id));
+
+  // destination preview (move mode)
+  const existingByCrew = {}; tgtJobs.forEach((j) => (existingByCrew[j.crew_number] = (existingByCrew[j.crew_number] || 0) + 1));
+  const movingByCrew = {}; movingJobs.forEach((j) => { const c = tgtCrew ? Number(tgtCrew) : j.crew_number; movingByCrew[c] = (movingByCrew[c] || 0) + 1; });
+  const previewCrews = [...new Set([...Object.keys(existingByCrew), ...Object.keys(movingByCrew)].map(Number))].sort((a, b) => a - b);
+
+  const doMove = async () => {
+    if (!movingJobs.length) { setMsg("Pick at least one job to move."); return; }
+    if (tgtDate === srcDate && !tgtCrew) { setMsg("Choose a different day or crew to move to."); return; }
+    setBusy(true); setMsg("");
+    const offset = placement === "before" ? -1000 : 1000;
+    const reassign = tgtCrew ? Number(tgtCrew) : null;
+    const crewRow = reassign ? crews.find((c) => c.crew_number === reassign) : null;
+    const results = await Promise.all(movingJobs.map((j, i) => {
+      const upd = { date: tgtDate, status: "scheduled", started_at: null, completed_at: null, elapsed_seconds: 0, sort_order: offset + i };
+      if (reassign) { upd.crew_number = reassign; if (crewRow) { upd.members = crewRow.members || []; upd.truck_number = crewRow.truck_number || null; } }
+      return supabase.from("jobs").update(upd).eq("id", j.id);
+    }));
+    setBusy(false);
+    const err = results.find((r) => r.error);
+    if (err) { setMsg(err.error.message); return; }
+    onChanged?.(); onClose();
+  };
+
+  const doBump = async () => {
+    if (!bumpRows.length) { setMsg("Nothing to bump in that range."); return; }
+    setBusy(true); setMsg("");
+    let failed = null;
+    for (let i = 0; i < bumpRows.length && !failed; i += 20) {
+      const chunk = bumpRows.slice(i, i + 20);
+      const results = await Promise.all(chunk.map((j) =>
+        supabase.from("jobs").update({ date: addDays(j.date, Number(bumpDays)), status: "scheduled", started_at: null, completed_at: null, elapsed_seconds: 0 }).eq("id", j.id)
+      ));
+      failed = results.find((r) => r.error);
+    }
+    setBusy(false);
+    if (failed) { setMsg(failed.error.message); return; }
+    onChanged?.(); onClose();
+  };
+
+  const crewOpts = [{ value: "", label: "Keep same crew" }, ...ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))];
+  const srcCrewOpts = [{ value: "", label: "All crews" }, ...ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))];
+
+  return (
+    <div style={MODAL_WRAP} onClick={onClose}>
+      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>RESCHEDULE / WEATHER DAY</div>
+          <button className="x-btn" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="seg" style={{ display: "flex", gap: 6, margin: "12px 0 14px" }}>
+          <button className={mode === "move" ? "on" : ""} onClick={() => setMode("move")}>Move jobs</button>
+          <button className={mode === "bump" ? "on" : ""} onClick={() => setMode("bump")}>Bump forward</button>
+        </div>
+
+        <span className="label">From day</span>
+        <input className="input" type="date" value={srcDate} onChange={(e) => setSrcDate(e.target.value)} style={{ marginBottom: 10 }} />
+        <span className="label">Crew</span>
+        <div style={{ marginBottom: 14 }}>
+          <Dropdown value={srcCrew} placeholder="All crews" options={srcCrewOpts} onChange={(v) => setSrcCrew(v === "" ? "" : String(v))} />
+        </div>
+
+        {mode === "move" ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span className="label">Jobs to move ({movingJobs.length}/{srcJobs.length})</span>
+              <span className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", cursor: "pointer" }}
+                onClick={() => setSelected(selected.size === srcJobs.length ? new Set() : new Set(srcJobs.map((j) => j.id)))}>
+                {selected.size === srcJobs.length ? "Clear all" : "Select all"}
+              </span>
+            </div>
+            {loadingSrc ? <div className="empty"><span className="spinner" /></div> : srcJobs.length === 0 ? (
+              <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", padding: "8px 0 14px" }}>No unfinished jobs on {prettyDate(srcDate)}{srcCrew ? ` for Crew ${srcCrew}` : ""}.</div>
+            ) : (
+              <div style={{ maxHeight: 200, overflowY: "auto", margin: "4px 0 14px", border: "1px solid var(--moss)", borderRadius: 10 }}>
+                {srcJobs.map((j) => (
+                  <div key={j.id} onClick={() => toggle(j.id)} style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 11px", borderBottom: "1px solid var(--bark2)", cursor: "pointer" }}>
+                    <input type="checkbox" readOnly checked={selected.has(j.id)} style={{ width: 16, height: 16, accentColor: "var(--lime)" }} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{names[j.client_id] || j.address}</div>
+                      <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>Crew {j.crew_number}{j.status === "in_progress" ? " · in progress" : ""}{j.series_id ? " · ↻" : ""}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <span className="label">Move to day</span>
+            <input className="input" type="date" value={tgtDate} onChange={(e) => setTgtDate(e.target.value)} style={{ marginBottom: 10 }} />
+            <span className="label">Assign to</span>
+            <div style={{ marginBottom: 10 }}>
+              <Dropdown value={tgtCrew} placeholder="Keep same crew" options={crewOpts} onChange={(v) => setTgtCrew(v === "" ? "" : String(v))} />
+            </div>
+            <span className="label">Place them</span>
+            <div className="seg" style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <button className={placement === "before" ? "on" : ""} onClick={() => setPlacement("before")}>Before that day's jobs</button>
+              <button className={placement === "after" ? "on" : ""} onClick={() => setPlacement("after")}>After</button>
+            </div>
+
+            {movingJobs.length > 0 && (
+              <div className="card" style={{ padding: "11px 13px", margin: "0 0 14px", background: "var(--bark2)" }}>
+                <div className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", letterSpacing: .5, marginBottom: 6 }}>
+                  {prettyDate(tgtDate)} after this move:
+                </div>
+                {previewCrews.length === 0 ? <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)" }}>Empty day.</div> : previewCrews.map((c) => {
+                  const ex = existingByCrew[c] || 0, mv = movingByCrew[c] || 0;
+                  return (
+                    <div key={c} className="hd-cond" style={{ fontSize: 13, color: "var(--cream)", display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                      <span>Crew {c}</span>
+                      <span style={{ color: "var(--stone)" }}>{ex} here {mv ? <span style={{ color: "var(--lime)" }}>+ {mv} moving = {ex + mv}</span> : "(unchanged)"}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {msg && <div className="error" style={{ marginBottom: 10 }}>{msg}</div>}
+            <button className="btn btn-mgr btn-sm" disabled={busy} onClick={doMove}>
+              {busy ? "Moving…" : `Move ${movingJobs.length} job${movingJobs.length === 1 ? "" : "s"} to ${prettyDate(tgtDate)}`}
+            </button>
+            <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>
+              Moved jobs reset to "scheduled" (timers cleared). Completed work on either day is left alone.
+            </div>
+          </>
+        ) : (
+          <>
+            <label style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 12, cursor: "pointer" }}>
+              <input type="checkbox" checked={bumpFollowing} onChange={(e) => setBumpFollowing(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--lime)" }} />
+              <span className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", letterSpacing: .5 }}>Also slide every day after this one</span>
+            </label>
+            <span className="label">Shift forward by</span>
+            <div className="seg" style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {[1, 2, 3, 7].map((n) => (
+                <button key={n} className={Number(bumpDays) === n ? "on" : ""} onClick={() => setBumpDays(n)}>{n === 7 ? "1 week" : `${n} day${n > 1 ? "s" : ""}`}</button>
+              ))}
+            </div>
+            <div className="card" style={{ padding: "11px 13px", margin: "0 0 14px", background: "var(--bark2)" }}>
+              <div className="hd-cond" style={{ fontSize: 13, color: "var(--cream)" }}>
+                {bumpFollowing
+                  ? `Everything from ${prettyDate(srcDate)} onward${srcCrew ? ` (Crew ${srcCrew})` : ""} slides forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`
+                  : `${prettyDate(srcDate)}'s unfinished jobs${srcCrew ? ` (Crew ${srcCrew})` : ""} move forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`}
+              </div>
+              <div className="hd-bebas" style={{ fontSize: 16, color: "var(--lime)", letterSpacing: 1, marginTop: 6 }}>{bumpRows.length} visit{bumpRows.length === 1 ? "" : "s"} affected</div>
+            </div>
+            {msg && <div className="error" style={{ marginBottom: 10 }}>{msg}</div>}
+            <button className="btn btn-mgr btn-sm" disabled={busy || !bumpRows.length} onClick={doBump}>
+              {busy ? "Bumping…" : `Bump ${bumpRows.length} visit${bumpRows.length === 1 ? "" : "s"} forward`}
+            </button>
+            <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>
+              Sliding the whole route keeps relative order and avoids piling onto an already-full day. Completed visits stay put.
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ManagerJobs() {
   const [viewMode, setViewMode] = useState("day"); // day | week | month
   const [date, setDate] = useState(todayStr());
@@ -1518,6 +1736,7 @@ function ManagerJobs() {
   const [crewFilter, setCrewFilter] = useState("");
   const [editJob, setEditJob] = useState(null);
   const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
+  const [resched, setResched] = useState(false);
 
   const range = (() => {
     if (viewMode === "week") { const a = weekAnchor(date); return [a, addDays(a, 6)]; }
@@ -1708,6 +1927,10 @@ function ManagerJobs() {
         <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 12px" }} onClick={() => setDate(todayStr())}>Today</button>
       </div>
 
+      <button className="btn btn-ghost btn-sm" onClick={() => setResched(true)} style={{ marginBottom: 14, borderColor: "var(--mgr)", color: "var(--mgr-lt)" }}>
+        <Ic n="cal2" size={15} style={{ marginRight: 7, verticalAlign: -3 }} />Reschedule / weather day
+      </button>
+
       {loading && <div className="empty"><span className="spinner" /></div>}
 
       {!loading && viewMode === "week" && <WeekView />}
@@ -1764,6 +1987,7 @@ function ManagerJobs() {
         onEditSeries={(sid, fd) => { setEditJob(null); setEditSeries({ seriesId: sid, fromDate: fd }); }} />}
       {editSeries && <SeriesEditor seriesId={editSeries.seriesId} fromDate={editSeries.fromDate}
         onClose={() => setEditSeries(null)} onChanged={reload} />}
+      {resched && <RescheduleTool initialDate={date} onClose={() => setResched(false)} onChanged={reload} />}
     </div>
   );
 }
