@@ -308,7 +308,7 @@ textarea.input{resize:none;}
 .chip-done{background:rgba(106,184,32,.16);color:var(--lime);}
 
 .tabbar{position:sticky;bottom:0;left:0;right:0;display:flex;background:var(--bark);border-top:1px solid var(--moss);padding-bottom:env(safe-area-inset-bottom);z-index:40;max-width:480px;margin:0 auto;}
-.tab{flex:1;padding:9px 2px 8px;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-family:'Barlow Condensed',sans-serif;font-size:9.5px;letter-spacing:.3px;text-transform:uppercase;color:var(--stone);}
+.tab{flex:1;padding:9px 1px 8px;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-family:'Barlow Condensed',sans-serif;font-size:9px;letter-spacing:.2px;text-transform:uppercase;color:var(--stone);white-space:nowrap;}
 .tab.active{color:var(--lime);}
 .tab.active.mgr{color:var(--mgr-lt);}
 .tab svg{width:19px;height:19px;}
@@ -366,7 +366,6 @@ const PATHS = {
   settings: "M12 15a3 3 0 100-6 3 3 0 000 6zM4 12h2M18 12h2M12 4v2M12 18v2",
   cal2: "M3 5h18v16H3zM3 9h18M8 3v4M16 3v4M8 14h3v3H8z",
   refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
-  expand: "M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3",
 };
 const Ic = ({ n, size = 20, color = "currentColor", style = {} }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"
@@ -1133,7 +1132,7 @@ function BuildSchedule({ onDone }) {
               </div>
               <span className="label">Address</span>
               <div style={{ marginBottom: 9 }}>
-                <AddressSearch clients={clients} value={s.search}
+                <AddressSearch clients={clients.filter((c) => !c.archived)} value={s.search}
                   onChangeText={(v) => setStop(s.key, { search: v, address: v, client: null })}
                   onPick={(c) => setStop(s.key, { client: c, address: c.address || c.name, search: `${c.name} — ${c.address || ""}` })} />
               </div>
@@ -1228,7 +1227,7 @@ function useLeaflet() {
   return ready;
 }
 
-function JobsMap({ jobs, onExpand }) {
+function JobsMap({ jobs }) {
   const t = useT();
   const ready = useLeaflet();
   const elRef = useRef(null);
@@ -1310,13 +1309,6 @@ function JobsMap({ jobs, onExpand }) {
     <div style={{ position: "relative" }}>
       <div ref={elRef} style={{ height: 260, width: "100%", borderRadius: 11, overflow: "hidden", border: "1px solid var(--moss)" }} />
       {!ready && <div className="empty" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div>}
-      {onExpand && (
-        <button onClick={onExpand} title="Open full-screen map"
-          style={{ position: "absolute", top: 10, right: 10, zIndex: 500, background: "var(--earth)", color: "var(--cream)", border: "1.5px solid var(--lime)",
-            borderRadius: 8, padding: "7px 11px", fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: .5, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-          <Ic n="expand" size={14} /> Full map
-        </button>
-      )}
       <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
         {[["#e05540", t("statusScheduled")], ["#9b59b6", t("statusInProgress")], ["#22c55e", t("statusComplete")]].map(([c, l]) => (
           <span key={l} className="hd-cond" style={{ fontSize: 12, color: "var(--cream)", display: "flex", alignItems: "center", gap: 5 }}>
@@ -1334,129 +1326,6 @@ function JobsMap({ jobs, onExpand }) {
 const MODAL_WRAP = { position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 600, display: "flex", alignItems: "flex-end", justifyContent: "center" };
 const MODAL_CARD = { width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", margin: 0, padding: 18, borderRadius: "16px 16px 0 0" };
 
-// Full-screen map: every client (blue), plus the day's jobs by status, with
-// layer toggles and a crew filter.
-const MAP_LAYERS = [
-  ["props", "Properties", "#2563eb"],
-  ["scheduled", "Scheduled", "#e05540"],
-  ["in_progress", "In progress", "#9b59b6"],
-  ["complete", "Complete", "#22c55e"],
-];
-function FullScreenMap({ jobs, onClose }) {
-  const ready = useLeaflet();
-  const elRef = useRef(null);
-  const mapRef = useRef(null);
-  const layerRef = useRef(null);
-  const [clients, setClients] = useState([]);
-  const [shopPt, setShopPt] = useState([SHOP.lat, SHOP.lng]);
-  const [show, setShow] = useState({ props: true, scheduled: true, in_progress: true, complete: true });
-  const [crew, setCrew] = useState(""); // "" = all crews
-
-  useEffect(() => {
-    supabase.from("clients").select("id,name,address,lat,lng").not("lat", "is", null)
-      .then(({ data }) => setClients(data || []));
-    let alive = true;
-    geocode(SHOP.address).then((g) => { if (alive && g) setShopPt([g.lat, g.lng]); });
-    return () => { alive = false; };
-  }, []);
-
-  useEffect(() => {
-    if (!ready || !elRef.current || mapRef.current) return;
-    const L = window.L;
-    // Start framed on Massachusetts.
-    mapRef.current = L.map(elRef.current, { preferCanvas: true }).setView([42.15, -71.65], 8);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(mapRef.current);
-    layerRef.current = L.layerGroup().addTo(mapRef.current);
-    // Leaflet needs a correctly-sized container; fix size, then frame the state.
-    const frame = () => {
-      if (!mapRef.current) return;
-      mapRef.current.invalidateSize();
-      mapRef.current.fitBounds([[41.2, -73.6], [42.95, -69.85]], { padding: [10, 10] });
-    };
-    const t1 = setTimeout(frame, 120);
-    const t2 = setTimeout(frame, 450);
-    return () => { clearTimeout(t1); clearTimeout(t2); if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
-  }, [ready]);
-
-  const statusKey = (j) => (j.status === "completed" || j.status === "done_for_today") ? "complete"
-    : j.status === "in_progress" ? "in_progress" : "scheduled";
-
-  // guard against bad/missing coordinates (0/0, swapped lat-lng, etc.)
-  const okPt = (lat, lng) => lat != null && lng != null && lat > 24 && lat < 50 && lng > -125 && lng < -66;
-
-  useEffect(() => {
-    if (!mapRef.current || !layerRef.current) return;
-    const L = window.L;
-    layerRef.current.clearLayers();
-
-    // all client properties (blue)
-    if (show.props) {
-      clients.forEach((c) => {
-        if (!okPt(c.lat, c.lng)) return;
-        L.circleMarker([c.lat, c.lng], { radius: 4, fillColor: "#2563eb", color: "#fff", weight: 1, opacity: 1, fillOpacity: 0.85 })
-          .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:140px;"><div style="font-weight:700;font-size:13px;color:#1c2414;">${c.name || ""}</div><div style="font-size:11px;color:#666;">${c.address || ""}</div></div>`)
-          .addTo(layerRef.current);
-      });
-    }
-
-    // today's jobs by status (respecting the crew filter)
-    const fj = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
-    fj.forEach((job) => {
-      if (!okPt(job.lat, job.lng)) return;
-      const key = statusKey(job);
-      if (!show[key]) return;
-      const color = key === "complete" ? "#22c55e" : key === "in_progress" ? "#9b59b6" : "#e05540";
-      L.circleMarker([job.lat, job.lng], { radius: 8, fillColor: color, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.95 })
-        .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:150px;"><div style="font-weight:700;font-size:14px;color:#1c2414;">${job.client_name || job.address || ""}</div><div style="font-size:12px;color:#666;">${job.address || ""}</div><div style="font-size:11px;margin-top:4px;color:${color};font-weight:700;">Crew ${job.crew_number} · ${key === "complete" ? "Complete" : key === "in_progress" ? "In progress" : "Scheduled"}</div><a href="https://maps.apple.com/?q=${encodeURIComponent(job.address || "")}" target="_blank" rel="noreferrer" style="font-size:12px;color:#2f6f4f;font-weight:700;display:inline-block;margin-top:5px;text-decoration:none;">→ Directions</a></div>`)
-        .addTo(layerRef.current);
-    });
-
-    if (okPt(shopPt[0], shopPt[1])) {
-      L.marker(shopPt, { icon: L.divIcon({ className: "", html: `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;background:#1c2414;border:2px solid #6ab820;font-size:14px;">🏠</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) })
-        .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;"><div style="font-weight:700;font-size:14px;color:#1c2414;">Shop / Yard</div><div style="font-size:12px;color:#666;">${SHOP.address}</div></div>`)
-        .addTo(layerRef.current);
-    }
-  }, [clients, show, crew, jobs, shopPt, ready]);
-
-  const crewNums = [...new Set(jobs.map((j) => j.crew_number))].sort((a, b) => a - b);
-  const counts = { props: clients.filter((c) => okPt(c.lat, c.lng)).length };
-  const fjAll = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
-  ["scheduled", "in_progress", "complete"].forEach((k) => (counts[k] = fjAll.filter((j) => statusKey(j) === k).length));
-
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 700, background: "var(--earth)", display: "flex", flexDirection: "column" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid var(--moss)" }}>
-        <div className="hd-bebas" style={{ fontSize: 19, color: "var(--cream)", letterSpacing: 1 }}>PROPERTY MAP</div>
-        <button className="x-btn" onClick={onClose}>✕</button>
-      </div>
-
-      <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--moss)" }}>
-        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10 }}>
-          {MAP_LAYERS.map(([k, label, color]) => {
-            const on = show[k];
-            return (
-              <button key={k} onClick={() => setShow((s) => ({ ...s, [k]: !s[k] }))}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 11px", borderRadius: 20, cursor: "pointer",
-                  border: `1.5px solid ${on ? color : "var(--moss)"}`, background: on ? color + "26" : "transparent",
-                  fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: .3, color: on ? "var(--cream)" : "var(--stone)", opacity: on ? 1 : 0.6 }}>
-                <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, border: "1px solid #fff" }} />
-                {label}{counts[k] != null ? ` (${counts[k]})` : ""}
-              </button>
-            );
-          })}
-        </div>
-        <Dropdown value={crew} placeholder="All crews"
-          options={[{ value: "", label: "All crews" }, ...crewNums.map((n) => ({ value: n, label: `Crew ${n}` }))]}
-          onChange={(v) => setCrew(v === "" ? "" : String(v))} />
-      </div>
-
-      <div style={{ position: "relative", flex: 1 }}>
-        <div ref={elRef} style={{ position: "absolute", inset: 0 }} />
-        {!ready && <div className="empty" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div>}
-      </div>
-    </div>
-  );
-}
 
 // Single-visit editor: move the date, swap members, skip/un-skip, delete, view photos.
 function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
@@ -1930,7 +1799,6 @@ function ManagerJobs() {
   const [editJob, setEditJob] = useState(null);
   const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
   const [resched, setResched] = useState(false);
-  const [fullMap, setFullMap] = useState(false);
   const [lastLoad, setLastLoad] = useState(Date.now());
 
   const range = (() => {
@@ -2176,7 +2044,7 @@ function ManagerJobs() {
             </>
           )}
 
-          <div style={{ marginTop: 14 }}><JobsMap jobs={dayFiltered.filter((j) => j.status !== "skipped")} onExpand={() => setFullMap(true)} /></div>
+          <div style={{ marginTop: 14 }}><JobsMap jobs={dayFiltered.filter((j) => j.status !== "skipped")} /></div>
 
           {dayFiltered.length === 0 ? (
             <div className="empty" style={{ paddingTop: 30 }}>
@@ -2199,7 +2067,6 @@ function ManagerJobs() {
       {editSeries && <SeriesEditor seriesId={editSeries.seriesId} fromDate={editSeries.fromDate}
         onClose={() => setEditSeries(null)} onChanged={reload} />}
       {resched && <RescheduleTool initialDate={date} onClose={() => setResched(false)} onChanged={reload} />}
-      {fullMap && <FullScreenMap jobs={dayJobs} onClose={() => setFullMap(false)} />}
     </div>
   );
 }
@@ -2297,7 +2164,7 @@ function NewProject({ onDone, onCancel }) {
 
       <span className="label">Job-site address</span>
       <div style={{ marginBottom: 12 }}>
-        <AddressSearch clients={clients} value={f.search}
+        <AddressSearch clients={clients.filter((c) => !c.archived)} value={f.search}
           onChangeText={(v) => set("search", v) || set("address", v)}
           onPick={(c) => setF((p) => ({ ...p, client: c, address: c.address || c.name, search: `${c.name} — ${c.address || ""}`,
             contact_name: p.contact_name || c.contact_name || "", contact_phone: p.contact_phone || c.contact_phone || "" }))} />
@@ -2710,12 +2577,159 @@ function HoursTab() {
   );
 }
 
+// Add or edit a client property. Geocodes the address on save so it shows on maps.
+function PropertyEditor({ client, onClose, onSaved }) {
+  const isNew = !client;
+  const [name, setName] = useState(client?.name || "");
+  const [address, setAddress] = useState(client?.address || "");
+  const [contact, setContact] = useState(client?.contact_name || "");
+  const [phone, setPhone] = useState(client?.contact_phone || "");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const save = async () => {
+    if (!name.trim()) { setMsg("Name is required."); return; }
+    setBusy(true); setMsg("");
+    const row = { name: name.trim(), address: address.trim() || null, contact_name: contact.trim() || null, contact_phone: phone.trim() || null };
+    const addrChanged = isNew || address.trim() !== (client?.address || "");
+    if (row.address && addrChanged) {
+      setMsg("Looking up location…");
+      const g = await geocode(row.address);
+      if (g) { row.lat = g.lat; row.lng = g.lng; }
+      setMsg("");
+    }
+    const resp = isNew
+      ? await supabase.from("clients").insert(row).select().single()
+      : await supabase.from("clients").update(row).eq("id", client.id).select().single();
+    setBusy(false);
+    if (resp.error) { setMsg(resp.error.message); return; }
+    onSaved?.(); onClose();
+  };
+
+  const setArchived = async (val) => {
+    setBusy(true); setMsg("");
+    const { error } = await supabase.from("clients").update({ archived: val }).eq("id", client.id);
+    setBusy(false);
+    if (error) { setMsg(error.message); return; }
+    onSaved?.(); onClose();
+  };
+
+  return (
+    <div style={MODAL_WRAP} onClick={onClose}>
+      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>{isNew ? "ADD PROPERTY" : "EDIT PROPERTY"}</div>
+          <button className="x-btn" onClick={onClose}>✕</button>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <span className="label">Name / customer</span>
+          <input className="input" style={{ marginBottom: 10 }} placeholder="e.g. Smith Residence" value={name} onChange={(e) => setName(e.target.value)} />
+          <span className="label">Address</span>
+          <input className="input" style={{ marginBottom: 10 }} placeholder="123 Main St, Town, MA" value={address} onChange={(e) => setAddress(e.target.value)} />
+          <span className="label">Contact name</span>
+          <input className="input" style={{ marginBottom: 10 }} placeholder="Optional" value={contact} onChange={(e) => setContact(e.target.value)} />
+          <span className="label">Phone</span>
+          <input className="input" style={{ marginBottom: 14 }} placeholder="Optional" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          {msg && <div className={msg === "Looking up location…" ? "hd-cond" : "error"} style={{ marginBottom: 10, fontSize: 13, color: msg === "Looking up location…" ? "var(--stone)" : undefined }}>{msg}</div>}
+          <button className="btn btn-mgr btn-sm" disabled={busy} onClick={save}>{busy ? "Saving…" : isNew ? "Add property" : "Save changes"}</button>
+          {isNew && <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>Once added, this property shows up in the address search when you build a schedule.</div>}
+          {!isNew && (
+            <div style={{ borderTop: "1px solid var(--moss)", marginTop: 14, paddingTop: 12 }}>
+              {client.archived
+                ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setArchived(false)}>Restore from archive</button>
+                : <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setArchived(true)} style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Archive this property</button>}
+              <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>
+                Archiving hides it from the list and the schedule's address search. Past job history is kept and it can be restored anytime.
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PropertiesTab() {
+  const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from("clients").select("*").order("name");
+    setClients(data || []); setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const ql = q.trim().toLowerCase();
+  const archivedCount = clients.filter((c) => c.archived).length;
+  const base = clients.filter((c) => (showArchived ? c.archived : !c.archived));
+  const filtered = ql ? base.filter((c) => (c.name || "").toLowerCase().includes(ql) || (c.address || "").toLowerCase().includes(ql)) : base;
+  const shown = filtered.slice(0, 100);
+
+  return (
+    <div style={{ animation: "fadeUp .25s ease both" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div className="section-hd" style={{ margin: 0 }}>{showArchived ? "Archived" : "Properties"}</div>
+        <button className="btn btn-mgr btn-sm" style={{ width: "auto", padding: "9px 14px" }} onClick={() => setAdding(true)}>
+          <Ic n="plus" size={15} style={{ marginRight: 6, verticalAlign: -2 }} />Add
+        </button>
+      </div>
+
+      <input className="input" placeholder="Search name or address…" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 8 }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span className="hd-cond" style={{ fontSize: 12, color: "var(--stone)" }}>
+          {loading ? "Loading…" : `${filtered.length} ${showArchived ? "archived" : "propert" + (filtered.length === 1 ? "y" : "ies")}${ql ? " match" : ""}`}
+        </span>
+        <span className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", cursor: "pointer", textDecoration: "underline" }}
+          onClick={() => { setShowArchived((v) => !v); setQ(""); }}>
+          {showArchived ? "← Back to active" : `View archived${archivedCount ? ` (${archivedCount})` : ""}`}
+        </span>
+      </div>
+
+      {loading ? <div className="empty"><span className="spinner" /></div> : shown.length === 0 ? (
+        <div className="empty" style={{ paddingTop: 24 }}>
+          <Ic n="pin" size={34} color="var(--moss)" style={{ marginBottom: 8 }} />
+          <div className="hd-cond">{ql ? "No matches" : showArchived ? "Nothing archived" : "No properties yet"}</div>
+        </div>
+      ) : shown.map((c) => (
+        <div key={c.id} className="card" onClick={() => setEditing(c)} style={{ padding: "11px 13px", cursor: "pointer" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <div style={{ minWidth: 0 }}>
+              <div className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: .5, lineHeight: 1.1 }}>{c.name}</div>
+              {c.address && <div style={{ fontSize: 13, color: "var(--stone)", marginTop: 2 }}>{c.address}</div>}
+              {(c.contact_name || c.contact_phone) && (
+                <div className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", marginTop: 3 }}>
+                  {c.contact_name}{c.contact_name && c.contact_phone ? " · " : ""}{c.contact_phone}
+                </div>
+              )}
+              {c.lat == null && <div className="hd-cond" style={{ fontSize: 11, color: "var(--warn)", marginTop: 3 }}>No map location</div>}
+            </div>
+            <Ic n="edit" size={16} color="var(--moss)" style={{ flexShrink: 0, marginTop: 2 }} />
+          </div>
+        </div>
+      )) }
+      {!loading && filtered.length > shown.length && (
+        <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)", textAlign: "center", marginTop: 8 }}>
+          Showing first {shown.length} of {filtered.length} — search to narrow down
+        </div>
+      )}
+
+      {(adding || editing) && <PropertyEditor client={editing} onClose={() => { setAdding(false); setEditing(null); }} onSaved={load} />}
+    </div>
+  );
+}
+
 function ManagerHome({ onLogout }) {
   const [tab, setTab] = useState("build");
   const [flash, setFlash] = useState("");
   const tabs = [
     { id: "build", label: "Build", icon: "plus" },
     { id: "jobs", label: "Jobs", icon: "map" },
+    { id: "props", label: "Clients", icon: "pin" },
     { id: "projects", label: "Projects", icon: "folder" },
     { id: "crews", label: "Crews", icon: "user" },
     { id: "hours", label: "Hours", icon: "clock" },
@@ -2738,6 +2752,7 @@ function ManagerHome({ onLogout }) {
         {flash && tab === "jobs" && <div className="success" style={{ marginBottom: 12 }}><Ic n="check" size={16} /> {flash}</div>}
         {tab === "build" && <BuildSchedule onDone={onSchedDone} />}
         {tab === "jobs" && <ManagerJobs />}
+        {tab === "props" && <PropertiesTab />}
         {tab === "projects" && <ProjectsTab />}
         {tab === "crews" && <CrewsTab />}
         {tab === "hours" && <HoursTab />}
