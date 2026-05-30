@@ -46,10 +46,10 @@ const TR = {
     left: "{n} left", mapWord: "Map", hideMap: "Hide map",
   },
   es: {
-    crewDispatch: "Despacho de Cuadrillas", selectCrew: "Selecciona tu cuadrilla", chooseCrew: "Elige una cuadrilla…",
-    signIn: "INICIAR SESIÓN", managerLogin: "Acceso de gerente / oficina", crew: "Cuadrilla", mowing: "Corte",
+    crewDispatch: "Despacho de Equipos", selectCrew: "Selecciona tu equipo", chooseCrew: "Elige un equipo…",
+    signIn: "INICIAR SESIÓN", managerLogin: "Acceso de gerente / oficina", crew: "Equipo", mowing: "Corte",
     managerAccess: "ACCESO DE GERENTE", passcode: "Código", enter: "ENTRAR",
-    incorrectPasscode: "Código incorrecto.", backToCrew: "← Volver al inicio de cuadrilla", signOut: "Cerrar sesión",
+    incorrectPasscode: "Código incorrecto.", backToCrew: "← Volver al inicio de equipo", signOut: "Cerrar sesión",
     noJobsToday: "No hay trabajos asignados hoy", toDo: "Por Hacer", allCaughtUp: "¡Todo al día! 🎉", done: "Hecho",
     job: "Trabajo", project: "Proyecto", continueJob: "Continuar", openJob: "Abrir trabajo",
     backToJobs: "Volver a trabajos", managerNotes: "Notas del Gerente", running: "En curso", paused: "Pausado",
