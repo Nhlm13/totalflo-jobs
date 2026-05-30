@@ -156,6 +156,32 @@ const eachDayInRange = (start, end, weekdays /* set of 0-6 */) => {
   }
   return out;
 };
+// Sunday that begins the week containing dateStr
+const weekAnchor = (dateStr) => {
+  const d = new Date(dateStr + "T12:00:00");
+  return addDays(dateStr, -d.getDay());
+};
+// All visit dates for a recurrence rule. weekdays = array of 0-6,
+// frequency = "weekly" | "biweekly" (biweekly = every other week from start).
+const seriesDates = (weekdays, frequency, start, end) => {
+  if (!weekdays || !weekdays.length || !start || !end) return [];
+  const set = new Set(weekdays.map(Number));
+  const anchor = weekAnchor(start);
+  const out = [];
+  let cur = start;
+  let guard = 0;
+  while (cur <= end && guard < 500) {
+    const dow = new Date(cur + "T12:00:00").getDay();
+    if (set.has(dow)) {
+      const weeksSince = Math.round((new Date(cur + "T12:00:00") - new Date(anchor + "T12:00:00")) / (7 * 86400000));
+      if (frequency !== "biweekly" || weeksSince % 2 === 0) out.push(cur);
+    }
+    cur = addDays(cur, 1);
+    guard++;
+  }
+  return out;
+};
+const WD = [["Su", 0], ["Mo", 1], ["Tu", 2], ["We", 3], ["Th", 4], ["Fr", 5], ["Sa", 6]];
 
 /* --------------------------- misc helpers --------------------------- */
 const fmtClock = (secs) => {
@@ -412,6 +438,7 @@ function StatusChip({ status }) {
   if (status === "completed") return <span className="chip chip-done"><Ic n="check" size={12} /> {t("statusComplete")}</span>;
   if (status === "in_progress") return <span className="chip chip-prog"><Ic n="clock" size={12} /> {t("statusInProgress")}</span>;
   if (status === "done_for_today") return <span className="chip chip-done"><Ic n="check" size={12} /> {t("statusDoneToday")}</span>;
+  if (status === "skipped") return <span className="chip" style={{ background: "rgba(212,160,23,.18)", color: "var(--warn)" }}>Skipped</span>;
   return <span className="chip chip-sched">{t("statusScheduled")}</span>;
 }
 
@@ -771,7 +798,7 @@ function CrewHome({ crew, onLogout }) {
     );
   }
 
-  const active = jobs.filter((j) => j.status !== "completed" && j.status !== "done_for_today");
+  const active = jobs.filter((j) => j.status !== "completed" && j.status !== "done_for_today" && j.status !== "skipped");
   const done = jobs.filter((j) => j.status === "completed" || j.status === "done_for_today");
 
   return (
@@ -921,7 +948,7 @@ function BuildSchedule({ onDone }) {
   const toggleMember = (name) =>
     setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
 
-  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, recurUntil: "" }]);
+  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, weekdays: [], frequency: "weekly", recurUntil: "" }]);
   const setStop = (key, patch) => setStops((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
   const rmStop = (key) => setStops((s) => s.filter((st) => st.key !== key));
   const moveStop = (key, dir) => setStops((s) => {
@@ -968,16 +995,13 @@ function BuildSchedule({ onDone }) {
     if (!crew) { setMsg("Pick a crew."); return; }
     const valid = stops.filter((s) => s.address.trim());
     if (valid.length === 0) { setMsg("Add at least one stop with an address."); return; }
-    // recurring stops need a valid end date
     for (const s of valid) {
-      if (s.recurring && (!s.recurUntil || s.recurUntil < date)) {
-        setMsg("Set an end date (on or after the start date) for each recurring stop.");
-        return;
+      if (s.recurring) {
+        if (!s.weekdays || s.weekdays.length === 0) { setMsg("Pick at least one day for each recurring stop."); return; }
+        if (!s.recurUntil || s.recurUntil < date) { setMsg("Set a season end date (on or after the start) for each recurring stop."); return; }
       }
     }
     setBusy(true); setMsg("");
-
-    const startDow = new Date(date + "T12:00:00").getDay();
 
     // 1. save/refresh the crew roster
     const { error: crewErr } = await supabase.from("crews")
@@ -985,40 +1009,40 @@ function BuildSchedule({ onDone }) {
       .eq("crew_number", crew);
     if (crewErr) { setBusy(false); setMsg(`Couldn't save the crew roster: ${crewErr.message}`); return; }
 
-    // 2. insert jobs per stop — once for a one-off, weekly for a recurring stop
+    // 2. one-off stops -> a single job; recurring stops -> a job_series + generated visits
     let stopIndex = 0;
     let total = 0;
     for (const s of valid) {
       let lat = s.client?.lat ?? s.lat ?? null, lng = s.client?.lng ?? s.lng ?? null;
       if (lat == null) { const g = await geocode(s.address); if (g) { lat = g.lat; lng = g.lng; } }
-      const dates = s.recurring
-        ? eachDayInRange(date, s.recurUntil, new Set([startDow]))   // same weekday each week
-        : [date];
-      // recurring stops share a series_id so they can be edited/deleted as a group
-      const seriesId = s.recurring ? crypto.randomUUID() : null;
+
+      const content = {
+        crew_number: Number(crew),
+        client_id: s.client?.id || null,
+        address: s.address,
+        lat, lng,
+        service_type: s.service_type || null,
+        notes: s.notes || null,
+        truck_number: truck || null,
+        members,
+      };
+
+      let dates = [date];
+      let seriesId = null;
+      if (s.recurring) {
+        const { data: ser, error: serErr } = await supabase.from("job_series")
+          .insert({ ...content, weekdays: s.weekdays, frequency: s.frequency, start_date: date, end_date: s.recurUntil, active: true })
+          .select().single();
+        if (serErr) { setBusy(false); setMsg(`Couldn't save the recurring service: ${serErr.message}`); return; }
+        seriesId = ser.id;
+        dates = seriesDates(s.weekdays, s.frequency, date, s.recurUntil);
+      }
+
       for (const d of dates) {
-        const row = {
-          crew_number: Number(crew),
-          date: d,
-          client_id: s.client?.id || null,
-          address: s.address,
-          lat, lng,
-          service_type: s.service_type || null,
-          notes: s.notes || null,
-          truck_number: truck || null,
-          members,
-          status: "scheduled",
-          sort_order: stopIndex,
-        };
-        // only reference series_id for recurring stops, so normal scheduling
-        // still works even if the series_id column hasn't been added yet
-        if (s.recurring) row.series_id = seriesId;
+        const row = { ...content, date: d, status: "scheduled", sort_order: stopIndex };
+        if (seriesId) row.series_id = seriesId;
         const { error } = await supabase.from("jobs").insert(row);
-        if (error) {
-          setBusy(false);
-          setMsg(`Couldn't save the schedule: ${error.message}`);
-          return;
-        }
+        if (error) { setBusy(false); setMsg(`Couldn't save the schedule: ${error.message}`); return; }
         total++;
       }
       stopIndex++;
@@ -1026,7 +1050,7 @@ function BuildSchedule({ onDone }) {
     setBusy(false);
     const anyRecurring = valid.some((s) => s.recurring);
     onDone?.(anyRecurring
-      ? `Scheduled ${total} job${total > 1 ? "s" : ""} for Crew ${crew} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring weekly).`
+      ? `Scheduled ${total} visit${total > 1 ? "s" : ""} for Crew ${crew} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring).`
       : `Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for Crew ${crew} on ${prettyDate(date)}.`);
   };
 
@@ -1088,20 +1112,45 @@ function BuildSchedule({ onDone }) {
 
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12 }}>
                 <input type="checkbox" id={`rec-${s.key}`} checked={s.recurring}
-                  onChange={(e) => setStop(s.key, { recurring: e.target.checked })}
+                  onChange={(e) => {
+                    const on = e.target.checked;
+                    const startDow = new Date(date + "T12:00:00").getDay();
+                    setStop(s.key, { recurring: on, weekdays: on && !s.weekdays.length ? [startDow] : s.weekdays });
+                  }}
                   style={{ width: 17, height: 17, accentColor: "var(--lime)", cursor: "pointer" }} />
                 <label htmlFor={`rec-${s.key}`} className="hd-cond"
                   style={{ fontSize: 14, color: "var(--cream)", letterSpacing: 1, cursor: "pointer" }}>
-                  Recurring weekly
+                  Recurring service
                 </label>
               </div>
               {s.recurring && (
-                <div style={{ marginTop: 8 }}>
-                  <span className="label">
-                    Repeat every {new Date(date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long" })} until
-                  </span>
-                  <input className="input" type="date" min={date} value={s.recurUntil}
-                    onChange={(e) => setStop(s.key, { recurUntil: e.target.value })} />
+                <div style={{ marginTop: 10 }}>
+                  <span className="label">Repeats on</span>
+                  <div style={{ display: "flex", gap: 5, marginBottom: 12 }}>
+                    {WD.map(([lbl, n]) => {
+                      const on = s.weekdays.includes(n);
+                      return (
+                        <button key={n} onClick={() => setStop(s.key, { weekdays: on ? s.weekdays.filter((x) => x !== n) : [...s.weekdays, n] })}
+                          style={{ flex: 1, padding: "8px 0", borderRadius: 7, border: "1.5px solid var(--moss)", cursor: "pointer",
+                            fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: .5,
+                            background: on ? "var(--lime)" : "var(--bark2)", color: on ? "var(--earth)" : "var(--stone)" }}>
+                          {lbl}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="label">Frequency</span>
+                  <div className="seg" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                    {[["weekly", "Weekly"], ["biweekly", "Every other week"]].map(([v, lbl]) => (
+                      <button key={v} className={s.frequency === v ? "on" : ""} onClick={() => setStop(s.key, { frequency: v })}>{lbl}</button>
+                    ))}
+                  </div>
+                  <span className="label">Season — start to end</span>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                    <input className="input" type="date" min={date} value={s.recurUntil}
+                      onChange={(e) => setStop(s.key, { recurUntil: e.target.value })} />
+                  </div>
                 </div>
               )}
             </div>
@@ -1213,113 +1262,297 @@ function JobsMap({ jobs }) {
   );
 }
 
-function JobViewModal({ job, onClose }) {
+const MODAL_WRAP = { position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 600, display: "flex", alignItems: "flex-end", justifyContent: "center" };
+const MODAL_CARD = { width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", margin: 0, padding: 18, borderRadius: "16px 16px 0 0" };
+
+// Single-visit editor: move the date, swap members, skip/un-skip, delete, view photos.
+function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
+  const [employees, setEmployees] = useState([]);
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dateVal, setDateVal] = useState(job.date);
+  const [members, setMembers] = useState(Array.isArray(job.members) ? job.members : []);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const done = job.status === "completed" || job.status === "done_for_today";
+  const skipped = job.status === "skipped";
+
   useEffect(() => {
-    supabase.from("job_photos").select("*").eq("job_id", job.id)
-      .then(({ data }) => { setPhotos(data || []); setLoading(false); });
+    supabase.from("employees").select("*").eq("active", true).order("name").then(({ data }) => setEmployees(data || []));
+    supabase.from("job_photos").select("*").eq("job_id", job.id).then(({ data }) => { setPhotos(data || []); setLoading(false); });
   }, [job.id]);
+
+  const toggleMember = (name) => setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
+  const after = async (fn) => { setBusy(true); setMsg(""); const { error } = await fn(); setBusy(false); if (error) { setMsg(error.message); return; } onChanged?.(); onClose(); };
+  const saveVisit = () => after(() => supabase.from("jobs").update({ date: dateVal, members }).eq("id", job.id));
+  const setStatus = (status) => after(() => supabase.from("jobs").update({ status }).eq("id", job.id));
+  const del = () => { if (window.confirm("Delete just this visit?")) after(() => supabase.from("jobs").delete().eq("id", job.id)); };
   const groups = [["before", "Before"], ["after", "After"], ["damage", "Existing damage"], ["other", "Other"]];
+
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 600, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
-      <div className="card" style={{ width: "100%", maxWidth: 480, maxHeight: "86vh", overflowY: "auto", margin: 0, padding: 18, borderRadius: "16px 16px 0 0" }} onClick={(e) => e.stopPropagation()}>
+    <div style={MODAL_WRAP} onClick={onClose}>
+      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-          <div className="hd-bebas" style={{ fontSize: 22, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.1 }}>{job.client_name || job.address || "Job"}</div>
+          <div className="hd-bebas" style={{ fontSize: 22, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.1 }}>{job.client_name || job.address || "Visit"}</div>
           <button className="x-btn" onClick={onClose}>✕</button>
         </div>
-        <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 8 }}>{job.address}</div>
-        <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", marginBottom: 4, letterSpacing: .5 }}>
+        <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 4 }}>{job.address}</div>
+        <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", marginBottom: 10, letterSpacing: .5 }}>
           Crew {job.crew_number}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
+          {job.series_id && <span style={{ color: "var(--lime)" }}> · ↻ Recurring</span>}
+          {skipped && <span style={{ color: "var(--warn)" }}> · Skipped</span>}
         </div>
-        {Array.isArray(job.members) && job.members.length > 0 &&
-          <div style={{ fontSize: 13, color: "var(--cream)", marginBottom: 8 }}>{job.members.join(", ")}</div>}
-        {job.service_type && <div style={{ fontSize: 13, color: "#92B4F4", marginBottom: 6 }}>{job.service_type}</div>}
-        {job.notes && <div className="note-box note-mgr" style={{ marginBottom: 8 }}><div style={{ fontSize: 13 }}>{job.notes}</div></div>}
-        <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", marginBottom: 12 }}>
-          {job.started_at && <>Started {fmtTime(job.started_at)}</>}
-          {job.completed_at && <> · Finished {fmtTime(job.completed_at)}</>}
-          {job.elapsed_seconds > 0 && <> · {fmtDuration(job.elapsed_seconds)}</>}
-        </div>
-        {loading ? <div className="empty"><span className="spinner" /></div> : photos.length === 0 ? (
-          <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", padding: "10px 0" }}>No photos uploaded for this job yet.</div>
-        ) : groups.map(([k, label]) => {
-          const ph = photos.filter((p) => p.kind === k);
-          if (!ph.length) return null;
-          return (
-            <div key={k} style={{ marginBottom: 12 }}>
-              <span className="label">{label}</span>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
-                {ph.map((p) => (
-                  <a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="photo-thumb" style={{ aspectRatio: "1" }}>
-                    <img src={p.url} alt={k} />
-                  </a>
-                ))}
-              </div>
-              {ph.some((p) => p.note) && <div style={{ fontSize: 12, color: "var(--stone)", marginTop: 4 }}>{ph.filter((p) => p.note).map((p) => p.note).join(" · ")}</div>}
+
+        {!done && (
+          <>
+            <span className="label">Visit date {job.series_id && "(moving affects only this visit)"}</span>
+            <input className="input" type="date" value={dateVal} onChange={(e) => setDateVal(e.target.value)} style={{ marginBottom: 12 }} />
+            <span className="label">Crew members on this visit</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
+              {employees.map((e) => (
+                <button key={e.id} className={"member-chip" + (members.includes(e.name) ? " on" : "")} onClick={() => toggleMember(e.name)}>{e.name}</button>
+              ))}
             </div>
-          );
-        })}
+            {msg && <div className="error" style={{ marginBottom: 10 }}>{msg}</div>}
+            <button className="btn btn-mgr btn-sm" disabled={busy} onClick={saveVisit} style={{ marginBottom: 10 }}>Save this visit</button>
+            <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+              {skipped
+                ? <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setStatus("scheduled")}>Un-skip</button>
+                : <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setStatus("skipped")} style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Skip this visit</button>}
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={del} style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
+            </div>
+            {job.series_id && (
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => onEditSeries(job.series_id, job.date)}>
+                <Ic n="calendar" size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Edit the whole recurring series…
+              </button>
+            )}
+          </>
+        )}
+
+        {(job.started_at || job.elapsed_seconds > 0) && (
+          <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", margin: "12px 0" }}>
+            {job.started_at && <>Started {fmtTime(job.started_at)}</>}
+            {job.completed_at && <> · Finished {fmtTime(job.completed_at)}</>}
+            {job.elapsed_seconds > 0 && <> · {fmtDuration(job.elapsed_seconds)}</>}
+          </div>
+        )}
+
+        <div style={{ borderTop: "1px solid var(--moss)", marginTop: 12, paddingTop: 12 }}>
+          {loading ? <div className="empty"><span className="spinner" /></div> : photos.length === 0 ? (
+            <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)" }}>No photos uploaded for this visit yet.</div>
+          ) : groups.map(([k, label]) => {
+            const ph = photos.filter((p) => p.kind === k);
+            if (!ph.length) return null;
+            return (
+              <div key={k} style={{ marginBottom: 12 }}>
+                <span className="label">{label}</span>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+                  {ph.map((p) => (<a key={p.id} href={p.url} target="_blank" rel="noreferrer" className="photo-thumb" style={{ aspectRatio: "1" }}><img src={p.url} alt={k} /></a>))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Whole-series editor: change crew/members/days/frequency/end, scoped to this+future or the entire series.
+function SeriesEditor({ seriesId, fromDate, onClose, onChanged }) {
+  const [series, setSeries] = useState(null);
+  const [employees, setEmployees] = useState([]);
+  const [crewNo, setCrewNo] = useState("");
+  const [truck, setTruck] = useState("");
+  const [members, setMembers] = useState([]);
+  const [svc, setSvc] = useState("");
+  const [notes, setNotes] = useState("");
+  const [weekdays, setWeekdays] = useState([]);
+  const [frequency, setFrequency] = useState("weekly");
+  const [endDate, setEndDate] = useState("");
+  const [scope, setScope] = useState("future"); // future | all
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    supabase.from("employees").select("*").eq("active", true).order("name").then(({ data }) => setEmployees(data || []));
+    supabase.from("job_series").select("*").eq("id", seriesId).single().then(({ data }) => {
+      if (!data) return;
+      setSeries(data);
+      setCrewNo(String(data.crew_number || ""));
+      setTruck(data.truck_number || "");
+      setMembers(Array.isArray(data.members) ? data.members : []);
+      setSvc(data.service_type || "");
+      setNotes(data.notes || "");
+      setWeekdays(Array.isArray(data.weekdays) ? data.weekdays : []);
+      setFrequency(data.frequency || "weekly");
+      setEndDate(data.end_date || "");
+    });
+  }, [seriesId]);
+
+  const toggleMember = (name) => setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
+  const toggleDay = (n) => setWeekdays((w) => (w.includes(n) ? w.filter((x) => x !== n) : [...w, n]));
+
+  const apply = async () => {
+    if (!series) return;
+    if (!weekdays.length) { setMsg("Pick at least one day."); return; }
+    if (!endDate || endDate < series.start_date) { setMsg("End date must be on/after the season start."); return; }
+    setBusy(true); setMsg("");
+    const scopeStart = scope === "all" ? series.start_date : fromDate;
+    const content = { crew_number: Number(crewNo), truck_number: truck || null, members, service_type: svc || null, notes: notes || null };
+
+    // 1. update the series record
+    const { error: serErr } = await supabase.from("job_series")
+      .update({ ...content, weekdays, frequency, end_date: endDate }).eq("id", seriesId);
+    if (serErr) { setBusy(false); setMsg(serErr.message); return; }
+
+    const patternChanged = frequency !== series.frequency || endDate !== series.end_date ||
+      JSON.stringify([...weekdays].sort()) !== JSON.stringify([...(series.weekdays || [])].sort());
+
+    if (patternChanged) {
+      // wipe upcoming non-completed visits in scope and regenerate from the new pattern
+      const { error: delErr } = await supabase.from("jobs").delete()
+        .eq("series_id", seriesId).in("status", ["scheduled", "skipped"]).gte("date", scopeStart);
+      if (delErr) { setBusy(false); setMsg(delErr.message); return; }
+      const dates = seriesDates(weekdays, frequency, series.start_date, endDate).filter((d) => d >= scopeStart);
+      for (const d of dates) {
+        const { error } = await supabase.from("jobs").insert({
+          ...content, client_id: series.client_id, address: series.address, lat: series.lat, lng: series.lng,
+          date: d, status: "scheduled", sort_order: 0, series_id: seriesId,
+        });
+        if (error) { setBusy(false); setMsg(error.message); return; }
+      }
+    } else {
+      // content-only change: update upcoming visits, preserving any moved/skipped exceptions' dates
+      const { error } = await supabase.from("jobs").update(content)
+        .eq("series_id", seriesId).in("status", ["scheduled", "skipped"]).gte("date", scopeStart);
+      if (error) { setBusy(false); setMsg(error.message); return; }
+    }
+    setBusy(false); onChanged?.(); onClose();
+  };
+
+  const del = async () => {
+    if (!series) return;
+    const scopeStart = scope === "all" ? series.start_date : fromDate;
+    if (!window.confirm(scope === "all" ? "Delete the entire recurring series (upcoming visits)?" : "Delete this and all upcoming visits in the series?")) return;
+    setBusy(true);
+    await supabase.from("jobs").delete().eq("series_id", seriesId).in("status", ["scheduled", "skipped"]).gte("date", scopeStart);
+    if (scope === "all") await supabase.from("job_series").update({ active: false }).eq("id", seriesId);
+    setBusy(false); onChanged?.(); onClose();
+  };
+
+  return (
+    <div style={MODAL_WRAP} onClick={onClose}>
+      <div className="card" style={MODAL_CARD} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div className="hd-bebas" style={{ fontSize: 20, color: "var(--lime)", letterSpacing: 1 }}>↻ RECURRING SERIES</div>
+          <button className="x-btn" onClick={onClose}>✕</button>
+        </div>
+        {!series ? <div className="empty"><span className="spinner" /></div> : (
+          <>
+            <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 12 }}>{series.address}</div>
+
+            <span className="label">Apply changes to</span>
+            <div className="seg" style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <button className={scope === "future" ? "on" : ""} onClick={() => setScope("future")}>This &amp; upcoming</button>
+              <button className={scope === "all" ? "on" : ""} onClick={() => setScope("all")}>Entire series</button>
+            </div>
+
+            <span className="label">Crew</span>
+            <div style={{ marginBottom: 10 }}>
+              <Dropdown value={crewNo} placeholder="Crew #" options={ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))} onChange={(v) => setCrewNo(String(v))} />
+            </div>
+            <span className="label">Truck #</span>
+            <input className="input" style={{ marginBottom: 10 }} value={truck} onChange={(e) => setTruck(e.target.value)} />
+            <span className="label">Crew members</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginBottom: 12 }}>
+              {employees.map((e) => (
+                <button key={e.id} className={"member-chip" + (members.includes(e.name) ? " on" : "")} onClick={() => toggleMember(e.name)}>{e.name}</button>
+              ))}
+            </div>
+            <span className="label">What needs to be done</span>
+            <input className="input" style={{ marginBottom: 10 }} value={svc} onChange={(e) => setSvc(e.target.value)} />
+            <span className="label">Notes for crew</span>
+            <textarea className="input" style={{ height: 54, fontSize: 14, marginBottom: 12 }} value={notes} onChange={(e) => setNotes(e.target.value)} />
+
+            <span className="label">Repeats on</span>
+            <div style={{ display: "flex", gap: 5, marginBottom: 12 }}>
+              {WD.map(([lbl, n]) => {
+                const on = weekdays.includes(n);
+                return (
+                  <button key={n} onClick={() => toggleDay(n)}
+                    style={{ flex: 1, padding: "8px 0", borderRadius: 7, border: "1.5px solid var(--moss)", cursor: "pointer",
+                      fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700,
+                      background: on ? "var(--lime)" : "var(--bark2)", color: on ? "var(--earth)" : "var(--stone)" }}>{lbl}</button>
+                );
+              })}
+            </div>
+            <span className="label">Frequency</span>
+            <div className="seg" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              {[["weekly", "Weekly"], ["biweekly", "Every other week"]].map(([v, lbl]) => (
+                <button key={v} className={frequency === v ? "on" : ""} onClick={() => setFrequency(v)}>{lbl}</button>
+              ))}
+            </div>
+            <span className="label">Season end</span>
+            <input className="input" type="date" value={endDate} min={series.start_date} onChange={(e) => setEndDate(e.target.value)} style={{ marginBottom: 12 }} />
+
+            <div className="hd-cond" style={{ fontSize: 12, color: "var(--moss)", marginBottom: 10 }}>
+              Changing days, frequency, or end date rebuilds the upcoming visits in scope (moved/skipped one-offs in that range will reset).
+            </div>
+            {msg && <div className="error" style={{ marginBottom: 10 }}>{msg}</div>}
+            <button className="btn btn-mgr btn-sm" disabled={busy} onClick={apply} style={{ marginBottom: 8 }}>{busy ? "Saving…" : "Apply changes"}</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={del} style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete {scope === "all" ? "entire series" : "this & upcoming"}</button>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 function ManagerJobs() {
+  const [viewMode, setViewMode] = useState("day"); // day | week | month
   const [date, setDate] = useState(todayStr());
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
-  const [crewFilter, setCrewFilter] = useState("");   // "" = all crews
-  const [viewJob, setViewJob] = useState(null);        // job whose photos/details are open
-  const [carry, setCarry] = useState(null);
-  const [carryDate, setCarryDate] = useState(addDays(todayStr(), 1));
-  const [series, setSeries] = useState(null);
-  const [seriesSvc, setSeriesSvc] = useState("");
-  const [seriesNotes, setSeriesNotes] = useState("");
+  const [crewFilter, setCrewFilter] = useState("");
+  const [editJob, setEditJob] = useState(null);
+  const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
+
+  const range = (() => {
+    if (viewMode === "week") { const a = weekAnchor(date); return [a, addDays(a, 6)]; }
+    if (viewMode === "month") {
+      const d = new Date(date + "T12:00:00");
+      const first = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+      const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      const last = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+      return [first, last];
+    }
+    return [date, date];
+  })();
 
   const load = useCallback(async () => {
     setLoading(true);
     const [{ data: jobData }, { data: clientData }] = await Promise.all([
-      supabase.from("jobs").select("*").eq("date", date).order("crew_number").order("sort_order"),
+      supabase.from("jobs").select("*").gte("date", range[0]).lte("date", range[1]).order("date").order("crew_number").order("sort_order"),
       supabase.from("clients").select("id,name"),
     ]);
     const cmap = {}; (clientData || []).forEach((c) => (cmap[c.id] = c.name));
     setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || null })));
     setLoading(false);
-  }, [date]);
+  }, [range[0], range[1]]);
 
   useEffect(() => { load(); const i = setInterval(load, 30000); return () => clearInterval(i); }, [load]);
   useEffect(() => { const i = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(i); }, []);
 
-  const doCarry = async () => {
-    await supabase.from("jobs").update({ date: carryDate, status: "scheduled", started_at: null, completed_at: null }).eq("id", carry.id);
-    setCarry(null); load();
-  };
-  const del = async (job) => {
-    if (!window.confirm("Remove this job from the schedule?")) return;
-    await supabase.from("jobs").delete().eq("id", job.id); load();
-  };
+  const del = async (job) => { if (!window.confirm("Remove this visit?")) return; await supabase.from("jobs").delete().eq("id", job.id); load(); };
+  const liveSecs = (job) => (job.elapsed_seconds || 0) +
+    (job.status === "in_progress" && job.started_at ? Math.max(0, Math.floor((now - new Date(job.started_at).getTime()) / 1000)) : 0);
 
-  const openSeries = (job) => { setSeries(job); setSeriesSvc(job.service_type || ""); setSeriesNotes(job.notes || ""); };
-  const doSeriesUpdate = async () => {
-    await supabase.from("jobs").update({ service_type: seriesSvc || null, notes: seriesNotes || null })
-      .eq("series_id", series.series_id).gte("date", series.date);
-    setSeries(null); load();
-  };
-  const doSeriesDelete = async (scope) => {
-    if (!window.confirm(scope === "all"
-      ? "Delete the ENTIRE recurring series, including past occurrences?"
-      : "Delete this occurrence and all upcoming ones in the series?")) return;
-    let q = supabase.from("jobs").delete().eq("series_id", series.series_id);
-    if (scope === "future") q = q.gte("date", series.date);
-    await q; setSeries(null); load();
-  };
-
-  // ---- per-crew rollup for the dashboard (always all crews) ----
-  const crewNums = [...new Set(jobs.map((j) => j.crew_number))].sort((a, b) => a - b);
+  const dayJobs = jobs.filter((j) => j.date === date);
+  const crewNums = [...new Set(dayJobs.map((j) => j.crew_number))].sort((a, b) => a - b);
   const crewSummary = crewNums.map((n) => {
-    const cj = jobs.filter((j) => j.crew_number === n);
+    const cj = dayJobs.filter((j) => j.crew_number === n && j.status !== "skipped");
     const doneN = cj.filter((j) => j.status === "completed" || j.status === "done_for_today").length;
     const inprog = cj.find((j) => j.status === "in_progress");
     const lastTs = cj.reduce((mx, j) => { const t = j.completed_at || j.started_at; return t && (!mx || t > mx) ? t : mx; }, null);
@@ -1331,21 +1564,20 @@ function ManagerJobs() {
     return { n, total: cj.length, doneN, inprog, lastTs, statusText };
   });
 
-  const filtered = crewFilter ? jobs.filter((j) => j.crew_number === crewFilter) : jobs;
-  const byStatus = (s) => filtered.filter((j) => s.includes(j.status));
-  const scheduled = byStatus(["scheduled"]);
+  const dayFiltered = (crewFilter ? dayJobs.filter((j) => j.crew_number === crewFilter) : dayJobs);
+  const byStatus = (s) => dayFiltered.filter((j) => s.includes(j.status));
   const progress = byStatus(["in_progress"]);
+  const scheduled = byStatus(["scheduled"]);
   const completed = byStatus(["completed", "done_for_today"]);
-
-  const liveSecs = (job) => (job.elapsed_seconds || 0) +
-    (job.status === "in_progress" && job.started_at ? Math.max(0, Math.floor((now - new Date(job.started_at).getTime()) / 1000)) : 0);
+  const skippedJobs = byStatus(["skipped"]);
 
   const Row = ({ job }) => (
     <div className="card" style={{ padding: "11px 13px", borderLeft: `4px solid ${
+      job.status === "skipped" ? "var(--warn)" :
       job.status === "in_progress" ? "var(--purple)" :
-      job.status === "completed" || job.status === "done_for_today" ? "var(--leaf)" : "var(--danger)"}` }}>
+      job.status === "completed" || job.status === "done_for_today" ? "var(--leaf)" : "var(--danger)"}`, opacity: job.status === "skipped" ? 0.7 : 1 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-        <div style={{ minWidth: 0, flex: 1, cursor: "pointer" }} onClick={() => setViewJob(job)}>
+        <div style={{ minWidth: 0, flex: 1, cursor: "pointer" }} onClick={() => setEditJob(job)}>
           <div className="hd-bebas" style={{ fontSize: 18, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.1 }}>
             {job.client_name || job.address || "Job"}
           </div>
@@ -1367,21 +1599,11 @@ function ManagerJobs() {
               {job.started_at && job.completed_at ? ` · ${fmtTime(job.started_at)}–${fmtTime(job.completed_at)}` : ""}
             </div>
           )}
-          <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 3 }}>tap to view photos →</div>
+          <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 3 }}>tap to edit / view photos →</div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
           <StatusChip status={job.status} />
-          <div style={{ display: "flex", gap: 6, marginTop: 8, justifyContent: "flex-end" }}>
-            {job.series_id && (
-              <button className="x-btn" title="Edit recurring series" style={{ background: "var(--mgr)", width: 30, height: 30, color: "var(--cream)", fontSize: 16 }}
-                onClick={() => openSeries(job)}>↻</button>
-            )}
-            {job.status !== "completed" && job.status !== "done_for_today" && (
-              <button className="x-btn" title="Carry over" style={{ background: "var(--moss)", width: 30, height: 30 }}
-                onClick={() => { setCarry(job); setCarryDate(addDays(date, 1)); }}>
-                <Ic n="cal2" size={15} color="var(--cream)" />
-              </button>
-            )}
+          <div style={{ marginTop: 8 }}>
             <button className="x-btn" title="Delete" style={{ background: "rgba(224,85,64,.25)", width: 30, height: 30 }}
               onClick={() => del(job)}><Ic n="trash" size={14} color="var(--danger)" /></button>
           </div>
@@ -1390,95 +1612,158 @@ function ManagerJobs() {
     </div>
   );
 
+  const reload = () => load();
+  const shiftRange = (dir) => {
+    if (viewMode === "week") setDate(addDays(date, dir * 7));
+    else if (viewMode === "month") { const d = new Date(date + "T12:00:00"); d.setMonth(d.getMonth() + dir); setDate(d.toLocaleDateString("en-CA")); }
+    else setDate(addDays(date, dir));
+  };
+
+  // ----- week view -----
+  const WeekView = () => {
+    const start = weekAnchor(date);
+    const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+    return (
+      <div style={{ marginTop: 14 }}>
+        {days.map((d) => {
+          const dj = (crewFilter ? jobs.filter((j) => j.crew_number === crewFilter) : jobs).filter((j) => j.date === d);
+          const isToday = d === todayStr();
+          return (
+            <div key={d} className="card" style={{ padding: "10px 12px", border: isToday ? "1.5px solid var(--mgr-lt)" : undefined }}>
+              <div className="hd-bebas" style={{ fontSize: 15, color: "var(--mgr-lt)", letterSpacing: 1, marginBottom: dj.length ? 8 : 0 }}>
+                {prettyDate(d)}{isToday ? " · TODAY" : ""} {dj.length ? `· ${dj.length}` : "· —"}
+              </div>
+              {dj.map((j) => (
+                <div key={j.id} onClick={() => setEditJob(j)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--bark2)", cursor: "pointer" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.client_name || j.address}</div>
+                    <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>Crew {j.crew_number}{j.series_id ? " · ↻" : ""}{j.status === "skipped" ? " · skipped" : ""}</div>
+                  </div>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", flexShrink: 0, background:
+                    j.status === "skipped" ? "var(--warn)" : j.status === "in_progress" ? "var(--purple)" :
+                    (j.status === "completed" || j.status === "done_for_today") ? "var(--leaf)" : "var(--danger)" }} />
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // ----- month view -----
+  const MonthView = () => {
+    const d = new Date(date + "T12:00:00");
+    const first = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+    const gridStart = weekAnchor(first);
+    const cells = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
+    const monthIdx = d.getMonth();
+    const counts = {};
+    (crewFilter ? jobs.filter((j) => j.crew_number === crewFilter) : jobs).forEach((j) => { counts[j.date] = (counts[j.date] || 0) + 1; });
+    return (
+      <div style={{ marginTop: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 3, marginBottom: 4 }}>
+          {WD.map(([l]) => <div key={l} className="hd-cond" style={{ textAlign: "center", fontSize: 11, color: "var(--stone)" }}>{l}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 3 }}>
+          {cells.map((c) => {
+            const inMonth = new Date(c + "T12:00:00").getMonth() === monthIdx;
+            const n = counts[c] || 0;
+            const isToday = c === todayStr();
+            return (
+              <div key={c} onClick={() => { setDate(c); setViewMode("day"); }}
+                style={{ aspectRatio: "1", borderRadius: 7, padding: 4, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start",
+                  background: isToday ? "var(--mgr)" : n ? "var(--bark2)" : "transparent", opacity: inMonth ? 1 : 0.35, border: "1px solid var(--moss)" }}>
+                <span className="hd-cond" style={{ fontSize: 12, color: isToday ? "#fff" : "var(--cream)" }}>{new Date(c + "T12:00:00").getDate()}</span>
+                {n > 0 && <span className="hd-bebas" style={{ fontSize: 15, color: isToday ? "#fff" : "var(--lime)", marginTop: "auto" }}>{n}</span>}
+              </div>
+            );
+          })}
+        </div>
+        <div className="hd-cond" style={{ fontSize: 12, color: "var(--stone)", marginTop: 8, textAlign: "center" }}>Tap a day to open it</div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
       <div className="section-hd">Job Tracker</div>
 
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
-        <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ flex: 1 }} />
-        <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 14px" }} onClick={() => setDate(todayStr())}>Today</button>
+      <div className="seg" style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([v, l]) => (
+          <button key={v} className={viewMode === v ? "on" : ""} onClick={() => setViewMode(v)}>{l}</button>
+        ))}
       </div>
 
-      {/* crew status dashboard */}
-      {crewSummary.length > 0 && (
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+        <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 13px" }} onClick={() => shiftRange(-1)}>‹</button>
+        {viewMode === "day"
+          ? <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ flex: 1 }} />
+          : <div className="hd-bebas" style={{ flex: 1, textAlign: "center", fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>
+              {viewMode === "month"
+                ? new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "long", year: "numeric" })
+                : `Week of ${prettyDate(weekAnchor(date))}`}
+            </div>}
+        <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 13px" }} onClick={() => shiftRange(1)}>›</button>
+        <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 12px" }} onClick={() => setDate(todayStr())}>Today</button>
+      </div>
+
+      {loading && <div className="empty"><span className="spinner" /></div>}
+
+      {!loading && viewMode === "week" && <WeekView />}
+      {!loading && viewMode === "month" && <MonthView />}
+
+      {!loading && viewMode === "day" && (
         <>
-          <div className="section-hd">Crews Today</div>
-          {crewSummary.map((c) => (
-            <div key={c.n} className="card" onClick={() => setCrewFilter(crewFilter === c.n ? "" : c.n)}
-              style={{ padding: "11px 13px", cursor: "pointer", border: crewFilter === c.n ? "1.5px solid var(--mgr-lt)" : undefined }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                <span className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>CREW {c.n}</span>
-                <span className="hd-cond" style={{ fontSize: 13, color: c.doneN === c.total ? "var(--leaf)" : "var(--mgr-lt)" }}>{c.doneN}/{c.total} done</span>
-              </div>
-              <div style={{ height: 7, borderRadius: 4, background: "var(--bark)", overflow: "hidden", marginBottom: 6 }}>
-                <div style={{ height: "100%", width: `${c.total ? (c.doneN / c.total) * 100 : 0}%`, background: c.inprog ? "var(--purple)" : "var(--leaf)" }} />
-              </div>
-              <div className="hd-cond" style={{ fontSize: 12, color: c.inprog ? "var(--purple)" : "var(--stone)", letterSpacing: .3 }}>
-                {c.statusText}{c.lastTs ? ` · updated ${timeAgo(c.lastTs)}` : ""}
-              </div>
+          {crewSummary.length > 0 && (
+            <>
+              <div className="section-hd">Crews Today</div>
+              {crewSummary.map((c) => (
+                <div key={c.n} className="card" onClick={() => setCrewFilter(crewFilter === c.n ? "" : c.n)}
+                  style={{ padding: "11px 13px", cursor: "pointer", border: crewFilter === c.n ? "1.5px solid var(--mgr-lt)" : undefined }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                    <span className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>CREW {c.n}</span>
+                    <span className="hd-cond" style={{ fontSize: 13, color: c.doneN === c.total ? "var(--leaf)" : "var(--mgr-lt)" }}>{c.doneN}/{c.total} done</span>
+                  </div>
+                  <div style={{ height: 7, borderRadius: 4, background: "var(--bark)", overflow: "hidden", marginBottom: 6 }}>
+                    <div style={{ height: "100%", width: `${c.total ? (c.doneN / c.total) * 100 : 0}%`, background: c.inprog ? "var(--purple)" : "var(--leaf)" }} />
+                  </div>
+                  <div className="hd-cond" style={{ fontSize: 12, color: c.inprog ? "var(--purple)" : "var(--stone)", letterSpacing: .3 }}>
+                    {c.statusText}{c.lastTs ? ` · updated ${timeAgo(c.lastTs)}` : ""}
+                  </div>
+                </div>
+              ))}
+              {crewFilter && (
+                <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", margin: "6px 0 10px", display: "flex", justifyContent: "space-between" }}>
+                  <span>Showing Crew {crewFilter} only</span>
+                  <span style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setCrewFilter("")}>Show all crews</span>
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{ marginTop: 14 }}><JobsMap jobs={dayFiltered.filter((j) => j.status !== "skipped")} /></div>
+
+          {dayFiltered.length === 0 ? (
+            <div className="empty" style={{ paddingTop: 30 }}>
+              <Ic n="list" size={36} color="var(--moss)" style={{ marginBottom: 8 }} />
+              <div className="hd-cond">No jobs {crewFilter ? `for Crew ${crewFilter}` : `on ${prettyDate(date)}`}</div>
             </div>
-          ))}
-          {crewFilter && (
-            <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", margin: "6px 0 10px", display: "flex", justifyContent: "space-between" }}>
-              <span>Showing Crew {crewFilter} only</span>
-              <span style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setCrewFilter("")}>Show all crews</span>
+          ) : (
+            <div style={{ marginTop: 18 }}>
+              {progress.length > 0 && <><div className="section-hd"><Ic n="clock" size={14} /> In Progress — {progress.length}</div>{progress.map((j) => <Row key={j.id} job={j} />)}</>}
+              {scheduled.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}>Scheduled — {scheduled.length}</div>{scheduled.map((j) => <Row key={j.id} job={j} />)}</>}
+              {completed.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}><Ic n="check" size={14} /> Completed — {completed.length}</div>{completed.map((j) => <Row key={j.id} job={j} />)}</>}
+              {skippedJobs.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}>Skipped — {skippedJobs.length}</div>{skippedJobs.map((j) => <Row key={j.id} job={j} />)}</>}
             </div>
           )}
         </>
       )}
 
-      <div style={{ marginTop: 14 }}><JobsMap jobs={filtered} /></div>
-
-      {loading ? <div className="empty"><span className="spinner" /></div> : filtered.length === 0 ? (
-        <div className="empty" style={{ paddingTop: 30 }}>
-          <Ic n="list" size={36} color="var(--moss)" style={{ marginBottom: 8 }} />
-          <div className="hd-cond">No jobs {crewFilter ? `for Crew ${crewFilter}` : `on ${prettyDate(date)}`}</div>
-        </div>
-      ) : (
-        <div style={{ marginTop: 18 }}>
-          {progress.length > 0 && <><div className="section-hd"><Ic n="clock" size={14} /> In Progress — {progress.length}</div>{progress.map((j) => <Row key={j.id} job={j} />)}</>}
-          {scheduled.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}>Scheduled — {scheduled.length}</div>{scheduled.map((j) => <Row key={j.id} job={j} />)}</>}
-          {completed.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}><Ic n="check" size={14} /> Completed — {completed.length}</div>{completed.map((j) => <Row key={j.id} job={j} />)}</>}
-        </div>
-      )}
-
-      {viewJob && <JobViewModal job={viewJob} onClose={() => setViewJob(null)} />}
-
-      {carry && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.65)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => setCarry(null)}>
-          <div className="card" style={{ width: "100%", maxWidth: 360, padding: 18, margin: 0 }} onClick={(e) => e.stopPropagation()}>
-            <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1, marginBottom: 4 }}>CARRY OVER JOB</div>
-            <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 14 }}>{carry.client_name || carry.address} → move to a new date</div>
-            <span className="label">New date</span>
-            <input className="input" type="date" value={carryDate} onChange={(e) => setCarryDate(e.target.value)} style={{ marginBottom: 14 }} />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-ghost btn-sm" onClick={() => setCarry(null)}>Cancel</button>
-              <button className="btn btn-mgr btn-sm" onClick={doCarry}>Move Job</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {series && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.65)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => setSeries(null)}>
-          <div className="card" style={{ width: "100%", maxWidth: 380, padding: 18, margin: 0 }} onClick={(e) => e.stopPropagation()}>
-            <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1, marginBottom: 4 }}>↻ RECURRING SERIES</div>
-            <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 14 }}>{series.client_name || series.address} · repeats weekly</div>
-            <span className="label">What needs to be done</span>
-            <input className="input" style={{ marginBottom: 10 }} value={seriesSvc} onChange={(e) => setSeriesSvc(e.target.value)} />
-            <span className="label">Notes for crew</span>
-            <textarea className="input" style={{ height: 60, fontSize: 14, marginBottom: 10 }} value={seriesNotes} onChange={(e) => setSeriesNotes(e.target.value)} />
-            <button className="btn btn-mgr btn-sm" onClick={doSeriesUpdate}>Apply to this &amp; all upcoming</button>
-            <div style={{ borderTop: "1px solid var(--moss)", marginTop: 14, paddingTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => doSeriesDelete("future")}>Delete this &amp; upcoming</button>
-              <button className="btn btn-ghost btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => doSeriesDelete("all")}>Delete entire series</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setSeries(null)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {editJob && <VisitEditor job={editJob} onClose={() => setEditJob(null)} onChanged={reload}
+        onEditSeries={(sid, fd) => { setEditJob(null); setEditSeries({ seriesId: sid, fromDate: fd }); }} />}
+      {editSeries && <SeriesEditor seriesId={editSeries.seriesId} fromDate={editSeries.fromDate}
+        onClose={() => setEditSeries(null)} onChanged={reload} />}
     </div>
   );
 }
