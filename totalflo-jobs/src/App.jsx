@@ -365,6 +365,7 @@ const PATHS = {
   warn: "M12 3l9 16H3zM12 10v4M12 17h.01",
   settings: "M12 15a3 3 0 100-6 3 3 0 000 6zM4 12h2M18 12h2M12 4v2M12 18v2",
   cal2: "M3 5h18v16H3zM3 9h18M8 3v4M16 3v4M8 14h3v3H8z",
+  refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
 };
 const Ic = ({ n, size = 20, color = "currentColor", style = {} }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"
@@ -1797,6 +1798,7 @@ function ManagerJobs() {
   const [editJob, setEditJob] = useState(null);
   const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
   const [resched, setResched] = useState(false);
+  const [lastLoad, setLastLoad] = useState(Date.now());
 
   const range = (() => {
     if (viewMode === "week") { const a = weekAnchor(date); return [a, addDays(a, 6)]; }
@@ -1818,11 +1820,19 @@ function ManagerJobs() {
     ]);
     const cmap = {}; (clientData || []).forEach((c) => (cmap[c.id] = c.name));
     setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || null })));
+    setLastLoad(Date.now());
     setLoading(false);
   }, [range[0], range[1]]);
 
-  useEffect(() => { load(); const i = setInterval(load, 30000); return () => clearInterval(i); }, [load]);
-  useEffect(() => { const i = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(i); }, []);
+  // Load once when the date range changes — no background auto-refresh, so the
+  // view never changes under you while you're editing. Use the Refresh button.
+  useEffect(() => { load(); }, [load]);
+  // Live timers only tick while no editor is open (keeps the screen still mid-edit).
+  useEffect(() => {
+    if (editJob || editSeries || resched) return;
+    const i = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, [editJob, editSeries, resched]);
 
   const del = async (job) => { if (!window.confirm("Remove this visit?")) return; await supabase.from("jobs").delete().eq("id", job.id); load(); };
   const liveSecs = (job) => (job.elapsed_seconds || 0) +
@@ -1966,7 +1976,15 @@ function ManagerJobs() {
 
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
-      <div className="section-hd">Job Tracker</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div className="section-hd" style={{ margin: 0 }}>Job Tracker</div>
+        <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "8px 14px" }} disabled={loading} onClick={() => load()}>
+          {loading ? <span className="spinner" style={{ width: 14, height: 14 }} /> : <><Ic n="refresh" size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Refresh</>}
+        </button>
+      </div>
+      <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginBottom: 12 }}>
+        Updated {timeAgo(lastLoad)} · this screen only refreshes when you tap Refresh
+      </div>
 
       <div className="seg" style={{ display: "flex", gap: 6, marginBottom: 12 }}>
         {[["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([v, l]) => (
