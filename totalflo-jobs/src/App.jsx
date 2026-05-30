@@ -366,6 +366,7 @@ const PATHS = {
   settings: "M12 15a3 3 0 100-6 3 3 0 000 6zM4 12h2M18 12h2M12 4v2M12 18v2",
   cal2: "M3 5h18v16H3zM3 9h18M8 3v4M16 3v4M8 14h3v3H8z",
   refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+  expand: "M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3",
 };
 const Ic = ({ n, size = 20, color = "currentColor", style = {} }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"
@@ -1227,7 +1228,7 @@ function useLeaflet() {
   return ready;
 }
 
-function JobsMap({ jobs }) {
+function JobsMap({ jobs, onExpand }) {
   const t = useT();
   const ready = useLeaflet();
   const elRef = useRef(null);
@@ -1309,6 +1310,13 @@ function JobsMap({ jobs }) {
     <div style={{ position: "relative" }}>
       <div ref={elRef} style={{ height: 260, width: "100%", borderRadius: 11, overflow: "hidden", border: "1px solid var(--moss)" }} />
       {!ready && <div className="empty" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div>}
+      {onExpand && (
+        <button onClick={onExpand} title="Open full-screen map"
+          style={{ position: "absolute", top: 10, right: 10, zIndex: 500, background: "var(--earth)", color: "var(--cream)", border: "1.5px solid var(--lime)",
+            borderRadius: 8, padding: "7px 11px", fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: .5, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+          <Ic n="expand" size={14} /> Full map
+        </button>
+      )}
       <div style={{ display: "flex", gap: 14, marginTop: 8, flexWrap: "wrap" }}>
         {[["#e05540", t("statusScheduled")], ["#9b59b6", t("statusInProgress")], ["#22c55e", t("statusComplete")]].map(([c, l]) => (
           <span key={l} className="hd-cond" style={{ fontSize: 12, color: "var(--cream)", display: "flex", alignItems: "center", gap: 5 }}>
@@ -1325,6 +1333,129 @@ function JobsMap({ jobs }) {
 
 const MODAL_WRAP = { position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 600, display: "flex", alignItems: "flex-end", justifyContent: "center" };
 const MODAL_CARD = { width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto", margin: 0, padding: 18, borderRadius: "16px 16px 0 0" };
+
+// Full-screen map: every client (blue), plus the day's jobs by status, with
+// layer toggles and a crew filter.
+const MAP_LAYERS = [
+  ["props", "Properties", "#2563eb"],
+  ["scheduled", "Scheduled", "#e05540"],
+  ["in_progress", "In progress", "#9b59b6"],
+  ["complete", "Complete", "#22c55e"],
+];
+function FullScreenMap({ jobs, onClose }) {
+  const ready = useLeaflet();
+  const elRef = useRef(null);
+  const mapRef = useRef(null);
+  const layerRef = useRef(null);
+  const [clients, setClients] = useState([]);
+  const [shopPt, setShopPt] = useState([SHOP.lat, SHOP.lng]);
+  const [show, setShow] = useState({ props: true, scheduled: true, in_progress: true, complete: true });
+  const [crew, setCrew] = useState(""); // "" = all crews
+
+  useEffect(() => {
+    supabase.from("clients").select("id,name,address,lat,lng").not("lat", "is", null)
+      .then(({ data }) => setClients(data || []));
+    let alive = true;
+    geocode(SHOP.address).then((g) => { if (alive && g) setShopPt([g.lat, g.lng]); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!ready || !elRef.current || mapRef.current) return;
+    mapRef.current = window.L.map(elRef.current, { preferCanvas: true }).setView(shopPt, 11);
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(mapRef.current);
+    layerRef.current = window.L.layerGroup().addTo(mapRef.current);
+    setTimeout(() => mapRef.current && mapRef.current.invalidateSize(), 100);
+    return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+  }, [ready]);
+
+  const statusKey = (j) => (j.status === "completed" || j.status === "done_for_today") ? "complete"
+    : j.status === "in_progress" ? "in_progress" : "scheduled";
+
+  // frame all properties once when they first load (not on every toggle)
+  const fittedRef = useRef(false);
+  useEffect(() => {
+    if (fittedRef.current || !mapRef.current || !clients.length) return;
+    const pts = clients.filter((c) => c.lat != null).map((c) => [c.lat, c.lng]);
+    if (pts.length) { try { mapRef.current.fitBounds(pts, { padding: [40, 40], maxZoom: 13 }); fittedRef.current = true; } catch (e) {} }
+  }, [clients, ready]);
+
+  useEffect(() => {
+    if (!mapRef.current || !layerRef.current) return;
+    const L = window.L;
+    layerRef.current.clearLayers();
+    const pts = [];
+
+    // all client properties (blue)
+    if (show.props) {
+      clients.forEach((c) => {
+        if (c.lat == null) return;
+        pts.push([c.lat, c.lng]);
+        L.circleMarker([c.lat, c.lng], { radius: 4, fillColor: "#2563eb", color: "#fff", weight: 1, opacity: 1, fillOpacity: 0.85 })
+          .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:140px;"><div style="font-weight:700;font-size:13px;color:#1c2414;">${c.name || ""}</div><div style="font-size:11px;color:#666;">${c.address || ""}</div></div>`)
+          .addTo(layerRef.current);
+      });
+    }
+
+    // today's jobs by status (respecting the crew filter)
+    const fj = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
+    fj.forEach((job) => {
+      if (job.lat == null) return;
+      const key = statusKey(job);
+      if (!show[key]) return;
+      const color = key === "complete" ? "#22c55e" : key === "in_progress" ? "#9b59b6" : "#e05540";
+      pts.push([job.lat, job.lng]);
+      L.circleMarker([job.lat, job.lng], { radius: 8, fillColor: color, color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.95 })
+        .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;min-width:150px;"><div style="font-weight:700;font-size:14px;color:#1c2414;">${job.client_name || job.address || ""}</div><div style="font-size:12px;color:#666;">${job.address || ""}</div><div style="font-size:11px;margin-top:4px;color:${color};font-weight:700;">Crew ${job.crew_number} · ${key === "complete" ? "Complete" : key === "in_progress" ? "In progress" : "Scheduled"}</div><a href="https://maps.apple.com/?q=${encodeURIComponent(job.address || "")}" target="_blank" rel="noreferrer" style="font-size:12px;color:#2f6f4f;font-weight:700;display:inline-block;margin-top:5px;text-decoration:none;">→ Directions</a></div>`)
+        .addTo(layerRef.current);
+    });
+
+    if (shopPt) {
+      L.marker(shopPt, { icon: L.divIcon({ className: "", html: `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:6px;background:#1c2414;border:2px solid #6ab820;font-size:14px;">🏠</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) })
+        .bindPopup(`<div style="font-family:'Barlow Condensed',sans-serif;"><div style="font-weight:700;font-size:14px;color:#1c2414;">Shop / Yard</div><div style="font-size:12px;color:#666;">${SHOP.address}</div></div>`)
+        .addTo(layerRef.current);
+    }
+  }, [clients, show, crew, jobs, shopPt, ready]);
+
+  const crewNums = [...new Set(jobs.map((j) => j.crew_number))].sort((a, b) => a - b);
+  const counts = { props: clients.length };
+  const fjAll = (crew ? jobs.filter((j) => j.crew_number === Number(crew)) : jobs).filter((j) => j.status !== "skipped");
+  ["scheduled", "in_progress", "complete"].forEach((k) => (counts[k] = fjAll.filter((j) => statusKey(j) === k).length));
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 700, background: "var(--earth)", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", borderBottom: "1px solid var(--moss)" }}>
+        <div className="hd-bebas" style={{ fontSize: 19, color: "var(--cream)", letterSpacing: 1 }}>PROPERTY MAP</div>
+        <button className="x-btn" onClick={onClose}>✕</button>
+      </div>
+
+      <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--moss)" }}>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10 }}>
+          {MAP_LAYERS.map(([k, label, color]) => {
+            const on = show[k];
+            return (
+              <button key={k} onClick={() => setShow((s) => ({ ...s, [k]: !s[k] }))}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 11px", borderRadius: 20, cursor: "pointer",
+                  border: `1.5px solid ${on ? color : "var(--moss)"}`, background: on ? color + "26" : "transparent",
+                  fontFamily: "'Barlow Condensed',sans-serif", fontSize: 13, fontWeight: 700, letterSpacing: .3, color: on ? "var(--cream)" : "var(--stone)", opacity: on ? 1 : 0.6 }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, border: "1px solid #fff" }} />
+                {label}{counts[k] != null ? ` (${counts[k]})` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <Dropdown value={crew} placeholder="All crews"
+          options={[{ value: "", label: "All crews" }, ...crewNums.map((n) => ({ value: n, label: `Crew ${n}` }))]}
+          onChange={(v) => setCrew(v === "" ? "" : String(v))} />
+      </div>
+
+      <div style={{ position: "relative", flex: 1 }}>
+        <div ref={elRef} style={{ position: "absolute", inset: 0 }} />
+        {!ready && <div className="empty" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div>}
+      </div>
+    </div>
+  );
+}
 
 // Single-visit editor: move the date, swap members, skip/un-skip, delete, view photos.
 function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
@@ -1798,6 +1929,7 @@ function ManagerJobs() {
   const [editJob, setEditJob] = useState(null);
   const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
   const [resched, setResched] = useState(false);
+  const [fullMap, setFullMap] = useState(false);
   const [lastLoad, setLastLoad] = useState(Date.now());
 
   const range = (() => {
@@ -2043,7 +2175,7 @@ function ManagerJobs() {
             </>
           )}
 
-          <div style={{ marginTop: 14 }}><JobsMap jobs={dayFiltered.filter((j) => j.status !== "skipped")} /></div>
+          <div style={{ marginTop: 14 }}><JobsMap jobs={dayFiltered.filter((j) => j.status !== "skipped")} onExpand={() => setFullMap(true)} /></div>
 
           {dayFiltered.length === 0 ? (
             <div className="empty" style={{ paddingTop: 30 }}>
@@ -2066,6 +2198,7 @@ function ManagerJobs() {
       {editSeries && <SeriesEditor seriesId={editSeries.seriesId} fromDate={editSeries.fromDate}
         onClose={() => setEditSeries(null)} onChanged={reload} />}
       {resched && <RescheduleTool initialDate={date} onClose={() => setResched(false)} onChanged={reload} />}
+      {fullMap && <FullScreenMap jobs={dayJobs} onClose={() => setFullMap(false)} />}
     </div>
   );
 }
