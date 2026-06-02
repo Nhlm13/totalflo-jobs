@@ -7,10 +7,49 @@ import { supabase } from "./supabaseClient.js";
    Crew + Manager job assignment & tracking
    ===================================================================== */
 
-const MOWING_CREWS = [1, 2, 3, 4, 5, 6, 7];           // get the arrival checklist
-const ALL_CREWS = Array.from({ length: 20 }, (_, i) => i + 1);
+// The teams. crew_number is an internal id (1-8 stay the mow crews so existing
+// data is unchanged); the app shows `label` everywhere. `sap` lists the
+// Service Autopilot "AssignedTo" strings that map to this team.
+const CREWS = [
+  { n: 1,  label: "M1", type: "Mowing", mow: true, sap: ["M1", "1"] },
+  { n: 2,  label: "M2", type: "Mowing", mow: true, sap: ["M2", "2"] },
+  { n: 3,  label: "M3", type: "Mowing", mow: true, sap: ["M3", "3"] },
+  { n: 4,  label: "M4", type: "Mowing", mow: true, sap: ["M4", "4"] },
+  { n: 5,  label: "M5", type: "Mowing", mow: true, sap: ["M5", "5"] },
+  { n: 6,  label: "M6", type: "Mowing", mow: true, sap: ["M6", "6"] },
+  { n: 7,  label: "M7", type: "Mowing", mow: true, sap: ["M7", "7"] },
+  { n: 8,  label: "M8", type: "Mowing", mow: true, sap: ["M8", "8"] },
+  { n: 9,  label: "Cnst 1", type: "Construction", sap: ["CNST1"] },
+  { n: 10, label: "Cnst 2", type: "Construction", sap: ["CNST2"] },
+  { n: 11, label: "Fert", type: "Other", sap: ["FERT"] },
+  { n: 12, label: "HM", type: "Other", sap: ["HM"] },
+  { n: 13, label: "Hydro", type: "Other", sap: ["HYDRO"] },
+  { n: 14, label: "Irr 1", type: "Irrigation", sap: ["IRR1"] },
+  { n: 15, label: "Irr 2", type: "Irrigation", sap: ["IRR2"] },
+  { n: 16, label: "Mnt 1", type: "Maintenance", sap: ["MNT1"] },
+  { n: 17, label: "Mnt 2", type: "Maintenance", sap: ["MNT2"] },
+  { n: 18, label: "Mnt 3", type: "Maintenance", sap: ["MNT3"] },
+  { n: 19, label: "Mnt 4", type: "Maintenance", sap: ["MNT4"] },
+  { n: 20, label: "Mnt 5", type: "Maintenance", sap: ["MNT5"] },
+  { n: 21, label: "Msny", type: "Other", sap: ["MSNY"] },
+  { n: 22, label: "Mqo", type: "Other", sap: ["MQO"] },
+  { n: 23, label: "PLW", type: "Other", sap: ["PLW"] },
+];
+const ALL_CREWS = CREWS.map((c) => c.n);
+const CREW_BY_N = Object.fromEntries(CREWS.map((c) => [c.n, c]));
+const CREW_OPTS = CREWS.map((c) => ({ value: c.n, label: c.label }));
+const CREW_TYPES = [...new Set(CREWS.map((c) => c.type))];
+const crewLabel = (n) => (CREW_BY_N[Number(n)] ? CREW_BY_N[Number(n)].label : `Crew ${n}`);
+const isMowing = (n) => !!(CREW_BY_N[Number(n)] && CREW_BY_N[Number(n)].mow);
+// Normalize a Service Autopilot "AssignedTo" string to a crew number (first one if shared).
+const SAP_CREW = {};
+CREWS.forEach((c) => (c.sap || []).forEach((a) => { SAP_CREW[a.replace(/\s+/g, "").toUpperCase()] = c.n; }));
+const crewFromSap = (raw) => {
+  if (!raw) return null;
+  const first = String(raw).split(",")[0].replace(/\s+/g, "").toUpperCase();
+  return SAP_CREW[first] ?? null;
+};
 const MANAGER_PASSCODE = import.meta.env.VITE_MANAGER_PASSCODE || "changeme";
-const isMowing = (n) => MOWING_CREWS.includes(Number(n));
 
 // Map default center — Avon, MA area. Adjust to your service area.
 const MAP_CENTER = [42.13, -71.05];
@@ -451,17 +490,14 @@ function StatusChip({ status }) {
 /* ===================================================================
    LOGIN
    =================================================================== */
-function LoginScreen({ onCrewLogin, onManagerLogin }) {
+function LoginScreen({ onCrewLogin, onManagerLogin, onSignOutDevice }) {
   const t = useT();
   const [mode, setMode] = useState("crew");
   const [crew, setCrew] = useState("");
   const [pass, setPass] = useState("");
   const [err, setErr] = useState("");
 
-  const crewOpts = ALL_CREWS.map((n) => ({
-    value: n,
-    label: `${t("crew")} ${n}` + (isMowing(n) ? `  (${t("mowing")})` : ""),
-  }));
+  const crewOpts = CREW_OPTS;
 
   const tryManager = () => {
     if (pass === MANAGER_PASSCODE) onManagerLogin();
@@ -518,6 +554,11 @@ function LoginScreen({ onCrewLogin, onManagerLogin }) {
       )}
 
       <div style={{ marginTop: "auto", paddingTop: 36, textAlign: "center" }}>
+        {onSignOutDevice && (
+          <div onClick={onSignOutDevice} style={{ marginBottom: 16, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 12, color: "var(--stone)", cursor: "pointer", letterSpacing: 1, textDecoration: "underline", textUnderlineOffset: 3 }}>
+            Sign out of this device
+          </div>
+        )}
         <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", letterSpacing: 1, lineHeight: 1.6 }}>
           Created by Salerni Creative Co LLC<br />All Rights Reserved
         </div>
@@ -780,7 +821,7 @@ function CrewHome({ crew, onLogout }) {
       supabase.from("clients").select("id,name"),
     ]);
     const cmap = {}; (clientData || []).forEach((c) => (cmap[c.id] = c.name));
-    setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || null })));
+    setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || j.title || null })));
     setLoading(false);
   }, [crew, today]);
 
@@ -922,6 +963,176 @@ function CrewJobCard({ job, onOpen, done, upNext }) {
 /* ===================================================================
    MANAGER — Build Schedule
    =================================================================== */
+// ---- Service Autopilot CSV import ----
+function parseCSV(text) {
+  const out = []; let row = []; let cur = ""; let q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(cur); cur = ""; }
+    else if (ch === "\n") { row.push(cur); out.push(row); row = []; cur = ""; }
+    else if (ch !== "\r") cur += ch;
+  }
+  if (cur.length || row.length) { row.push(cur); out.push(row); }
+  if (!out.length) return [];
+  const headers = out[0].map((h) => h.trim());
+  return out.slice(1).filter((r) => r.some((c) => (c || "").trim() !== "")).map((r) => {
+    const o = {}; headers.forEach((h, i) => (o[h] = (r[i] ?? "").trim())); return o;
+  });
+}
+const SAP_SVC = { WMT: "Weekly Mow", BMT: "Bi-weekly Mow" };
+const sapServiceLabel = (c) => SAP_SVC[c] || c || "Service";
+const sapDateToISO = (s) => {
+  if (!s) return null; const p = s.trim().split("/"); if (p.length !== 3) return null;
+  return `${p[2]}-${String(p[0]).padStart(2, "0")}-${String(p[1]).padStart(2, "0")}`;
+};
+const reorderName = (name) => {
+  if (!name) return ""; const i = name.indexOf(", ");
+  return i > 0 ? `${name.slice(i + 2)} ${name.slice(0, i)}`.trim() : name.trim();
+};
+
+// Import a day's schedule exported from Service Autopilot (Scheduling View CSV).
+function ImportDay({ onClose, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [fileName, setFileName] = useState("");
+  const [overrides, setOverrides] = useState({}); // normalized SAP label -> crew number
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    setFileName(f.name); setMsg(""); setRows(null);
+    const r = new FileReader();
+    r.onload = () => { try { setRows(parseCSV(String(r.result))); } catch { setMsg("Couldn't read that file — make sure it's the CSV export."); } };
+    r.onerror = () => setMsg("Couldn't read that file.");
+    r.readAsText(f);
+  };
+
+  const recs = (rows || []).map((r) => {
+    const assigned = r.AssignedTo || "";
+    const norm = assigned.split(",")[0].replace(/\s+/g, "").toUpperCase();
+    let crew = crewFromSap(assigned);
+    if (crew == null && overrides[norm] != null) crew = overrides[norm];
+    return {
+      crew, norm, assigned,
+      name: reorderName(r.ClientName) || r.ClientName || "",
+      address: [r.ServiceAddressLine1, r.ServiceCity, r.ServiceZIP].filter(Boolean).join(", "),
+      date: sapDateToISO(r.ScheduleDate),
+      service_type: sapServiceLabel(r.Service),
+      status: /complete/i.test(r.ScheduleStatus || "") ? "completed" : "scheduled",
+      sort_order: parseInt(r.RouteOrder, 10) || 0,
+      ext_ref: r.WorkOrderProjectNum || null,
+      shared: assigned.includes(",") ? assigned : "",
+    };
+  });
+  const dates = [...new Set(recs.map((r) => r.date).filter(Boolean))].sort();
+  const unmapped = [...new Set(recs.filter((r) => r.crew == null).map((r) => r.norm))];
+  const byCrew = {}; recs.forEach((r) => { if (r.crew != null) byCrew[r.crew] = (byCrew[r.crew] || 0) + 1; });
+  const crewsShown = Object.keys(byCrew).map(Number).sort((a, b) => a - b);
+
+  const doImport = async () => {
+    if (!recs.length) { setMsg("Nothing to import."); return; }
+    if (unmapped.length) { setMsg("Point the unmatched label(s) at a team first."); return; }
+    setBusy(true); setMsg(""); setProgress("Checking for jobs already imported…");
+    const existing = new Set();
+    const { data: ex } = await supabase.from("jobs").select("ext_ref,date").in("date", dates).eq("source", "sap");
+    (ex || []).forEach((j) => existing.add(`${j.ext_ref}|${j.date}`));
+    setProgress("Matching properties to your client list…");
+    const { data: clients } = await supabase.from("clients").select("id,address,lat,lng");
+    const cmap = {}; (clients || []).forEach((c) => { if (c.address) cmap[c.address.trim().toLowerCase()] = c; });
+
+    const toInsert = []; let dup = 0;
+    recs.forEach((r) => {
+      if (!r.date || r.crew == null) return;
+      if (r.ext_ref && existing.has(`${r.ext_ref}|${r.date}`)) { dup++; return; }
+      const m = cmap[(r.address || "").trim().toLowerCase()];
+      toInsert.push({
+        crew_number: r.crew, date: r.date, address: r.address,
+        title: r.name || null, client_id: m ? m.id : null,
+        lat: m ? m.lat : null, lng: m ? m.lng : null,
+        service_type: r.service_type, notes: r.shared ? `SAP: ${r.shared}` : null,
+        status: r.status, sort_order: r.sort_order,
+        ext_ref: r.ext_ref, source: "sap", members: [],
+      });
+    });
+    if (!toInsert.length) { setBusy(false); setMsg(dup ? `All ${dup} jobs were already imported for ${dates.map(prettyDate).join(", ")}.` : "Nothing new to import."); return; }
+    setProgress(`Saving ${toInsert.length} jobs…`);
+    let failed = null;
+    for (let i = 0; i < toInsert.length && !failed; i += 20) {
+      const res = await Promise.all(toInsert.slice(i, i + 20).map((row) => supabase.from("jobs").insert(row)));
+      failed = res.find((x) => x.error);
+    }
+    setBusy(false);
+    if (failed) { setMsg(failed.error.message); return; }
+    onDone && onDone(`Imported ${toInsert.length} job${toInsert.length === 1 ? "" : "s"}${dup ? `, skipped ${dup} already in` : ""} for ${dates.map(prettyDate).join(", ")}.`);
+    onClose();
+  };
+
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>IMPORT FROM SERVICE AUTOPILOT</div>
+        <button className="x-btn" onClick={onClose}>✕</button>
+      </div>
+
+      <div className="hd-cond" style={{ fontSize: 12, color: "var(--moss)", margin: "6px 0 14px" }}>
+        Export the Scheduling View as CSV in Service Autopilot, then choose that file here.
+      </div>
+
+      <label className="btn btn-ghost btn-sm" style={{ display: "block", textAlign: "center", cursor: "pointer", marginBottom: 12 }}>
+        {fileName ? `📄 ${fileName}` : "Choose CSV file"}
+        <input type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: "none" }} />
+      </label>
+
+      {msg && <div className="error" style={{ marginBottom: 12 }}>{msg}</div>}
+
+      {rows && (
+        <>
+          <div className="card" style={{ padding: "11px 13px", marginBottom: 12, background: "var(--bark2)" }}>
+            <div className="hd-bebas" style={{ fontSize: 16, color: "var(--cream)", letterSpacing: 1 }}>{recs.length} jobs · {dates.map(prettyDate).join(", ") || "no dates found"}</div>
+            <div style={{ marginTop: 8 }}>
+              {crewsShown.map((n) => (
+                <div key={n} className="hd-cond" style={{ fontSize: 13, color: "var(--cream)", display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
+                  <span>{crewLabel(n)}</span><span style={{ color: "var(--stone)" }}>{byCrew[n]} job{byCrew[n] === 1 ? "" : "s"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {unmapped.length > 0 && (
+            <div className="card" style={{ padding: "11px 13px", marginBottom: 12, border: "1.5px solid var(--warn)" }}>
+              <div className="hd-cond" style={{ fontSize: 13, color: "var(--warn)", marginBottom: 8 }}>
+                These labels aren't recognized — pick a team for each:
+              </div>
+              {unmapped.map((lbl) => (
+                <div key={lbl} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span className="hd-cond" style={{ fontSize: 13, color: "var(--cream)", minWidth: 70 }}>{lbl}</span>
+                  <div style={{ flex: 1 }}>
+                    <Dropdown value={overrides[lbl] ?? ""} placeholder="Choose team…" options={CREW_OPTS}
+                      onChange={(v) => setOverrides((o) => ({ ...o, [lbl]: Number(v) }))} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {busy && <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", marginBottom: 10 }}>{progress}</div>}
+          <button className="btn btn-mgr btn-sm" disabled={busy || !recs.length} onClick={doImport}>
+            {busy ? "Importing…" : `Import ${recs.length} jobs`}
+          </button>
+          <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>
+            Re-importing the same day won't create duplicates, and won't touch jobs a crew already finished.
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function BuildSchedule({ onDone }) {
   const [crew, setCrew] = useState("");
   const [truck, setTruck] = useState("");
@@ -954,6 +1165,7 @@ function BuildSchedule({ onDone }) {
   const toggleMember = (name) =>
     setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
 
+  const [showImport, setShowImport] = useState(false);
   const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, weekdays: [], frequency: "weekly", recurUntil: "" }]);
   const setStop = (key, patch) => setStops((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
   const rmStop = (key) => setStops((s) => s.filter((st) => st.key !== key));
@@ -1084,15 +1296,20 @@ function BuildSchedule({ onDone }) {
     setBusy(false);
     const anyRecurring = valid.some((s) => s.recurring);
     onDone?.(anyRecurring
-      ? `Scheduled ${total} visit${total > 1 ? "s" : ""} for Crew ${crew} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring).`
-      : `Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for Crew ${crew} on ${prettyDate(date)}.`);
+      ? `Scheduled ${total} visit${total > 1 ? "s" : ""} for ${crewLabel(crew)} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring).`
+      : `Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for ${crewLabel(crew)} on ${prettyDate(date)}.`);
   };
 
-  const crewOpts = ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` + (isMowing(n) ? " (Mowing)" : "") }));
+  const crewOpts = CREW_OPTS;
 
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
       <div className="section-hd">Build the Schedule</div>
+
+      <button className="btn btn-ghost btn-sm" onClick={() => setShowImport(true)} style={{ marginBottom: 16, borderColor: "var(--mgr)", color: "var(--mgr-lt)" }}>
+        <Ic n="list" size={15} style={{ marginRight: 7, verticalAlign: -3 }} />Import day from Service Autopilot
+      </button>
+      {showImport && <ImportDay onClose={() => setShowImport(false)} onDone={(m) => { setShowImport(false); onDone && onDone(m); }} />}
 
       <span className="label">Crew</span>
       <div style={{ marginBottom: 14 }}>
@@ -1279,7 +1496,7 @@ function JobsMap({ jobs }) {
         `<div style="font-family:'Barlow Condensed',sans-serif;min-width:150px;">
           <div style="font-weight:700;font-size:14px;color:#1c2414;">${job.client_name || job.address || ""}</div>
           <div style="font-size:12px;color:#666;margin-top:2px;">${job.address || ""}</div>
-          <div style="font-size:11px;margin-top:4px;color:${color};font-weight:700;">Crew ${job.crew_number} · ${complete ? "Complete" : prog ? "In Progress" : "Scheduled"}</div>
+          <div style="font-size:11px;margin-top:4px;color:${color};font-weight:700;">${crewLabel(job.crew_number)} · ${complete ? "Complete" : prog ? "In Progress" : "Scheduled"}</div>
           <a href="https://maps.apple.com/?q=${encodeURIComponent(job.address || "")}" target="_blank" rel="noreferrer" style="font-size:12px;color:#2f6f4f;font-weight:700;display:inline-block;margin-top:5px;text-decoration:none;">→ Directions</a>
         </div>`
       );
@@ -1378,7 +1595,7 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
         </div>
         <div style={{ fontSize: 13, color: "var(--stone)", marginBottom: 4 }}>{job.address}</div>
         <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", marginBottom: 10, letterSpacing: .5 }}>
-          Crew {job.crew_number}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
+          {crewLabel(job.crew_number)}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
           {job.series_id && <span style={{ color: "var(--lime)" }}> · ↻ Recurring</span>}
           {skipped && <span style={{ color: "var(--warn)" }}> · Skipped</span>}
         </div>
@@ -1538,7 +1755,7 @@ function SeriesEditor({ seriesId, fromDate, onClose, onChanged }) {
 
             <span className="label">Crew</span>
             <div style={{ marginBottom: 10 }}>
-              <Dropdown value={crewNo} placeholder="Crew #" options={ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))} onChange={(v) => setCrewNo(String(v))} />
+              <Dropdown value={crewNo} placeholder="Crew #" options={CREW_OPTS} onChange={(v) => setCrewNo(String(v))} />
             </div>
             <span className="label">Truck #</span>
             <input className="input" style={{ marginBottom: 10 }} value={truck} onChange={(e) => setTruck(e.target.value)} />
@@ -1684,8 +1901,8 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
     onChanged?.(); onClose();
   };
 
-  const crewOpts = [{ value: "", label: "Keep same crew" }, ...ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))];
-  const srcCrewOpts = [{ value: "", label: "All crews" }, ...ALL_CREWS.map((n) => ({ value: n, label: `Crew ${n}` }))];
+  const crewOpts = [{ value: "", label: "Keep same crew" }, ...CREW_OPTS];
+  const srcCrewOpts = [{ value: "", label: "All crews" }, ...CREW_OPTS];
 
   return (
     <Modal onClose={onClose}>
@@ -1716,7 +1933,7 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
               </span>
             </div>
             {loadingSrc ? <div className="empty"><span className="spinner" /></div> : srcJobs.length === 0 ? (
-              <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", padding: "8px 0 14px" }}>No unfinished jobs on {prettyDate(srcDate)}{srcCrew ? ` for Crew ${srcCrew}` : ""}.</div>
+              <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", padding: "8px 0 14px" }}>No unfinished jobs on {prettyDate(srcDate)}{srcCrew ? ` for ${crewLabel(srcCrew)}` : ""}.</div>
             ) : (
               <div style={{ maxHeight: 200, overflowY: "auto", margin: "4px 0 14px", border: "1px solid var(--moss)", borderRadius: 10 }}>
                 {srcJobs.map((j) => (
@@ -1724,7 +1941,7 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
                     <input type="checkbox" readOnly checked={selected.has(j.id)} style={{ width: 16, height: 16, accentColor: "var(--lime)" }} />
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{names[j.client_id] || j.address}</div>
-                      <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>Crew {j.crew_number}{j.status === "in_progress" ? " · in progress" : ""}{j.series_id ? " · ↻" : ""}</div>
+                      <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>{crewLabel(j.crew_number)}{j.status === "in_progress" ? " · in progress" : ""}{j.series_id ? " · ↻" : ""}</div>
                     </div>
                   </div>
                 ))}
@@ -1784,8 +2001,8 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
             <div className="card" style={{ padding: "11px 13px", margin: "0 0 14px", background: "var(--bark2)" }}>
               <div className="hd-cond" style={{ fontSize: 13, color: "var(--cream)" }}>
                 {bumpFollowing
-                  ? `Everything from ${prettyDate(srcDate)} onward${srcCrew ? ` (Crew ${srcCrew})` : ""} slides forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`
-                  : `${prettyDate(srcDate)}'s unfinished jobs${srcCrew ? ` (Crew ${srcCrew})` : ""} move forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`}
+                  ? `Everything from ${prettyDate(srcDate)} onward${srcCrew ? ` (${crewLabel(srcCrew)})` : ""} slides forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`
+                  : `${prettyDate(srcDate)}'s unfinished jobs${srcCrew ? ` (${crewLabel(srcCrew)})` : ""} move forward ${bumpDays === 7 ? "1 week" : `${bumpDays} day${bumpDays > 1 ? "s" : ""}`}.`}
               </div>
               <div className="hd-bebas" style={{ fontSize: 16, color: "var(--lime)", letterSpacing: 1, marginTop: 6 }}>{bumpRows.length} visit{bumpRows.length === 1 ? "" : "s"} affected</div>
             </div>
@@ -1833,7 +2050,7 @@ function ManagerJobs() {
       supabase.from("clients").select("id,name"),
     ]);
     const cmap = {}; (clientData || []).forEach((c) => (cmap[c.id] = c.name));
-    setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || null })));
+    setJobs((jobData || []).map((j) => ({ ...j, client_name: cmap[j.client_id] || j.title || null })));
     setLastLoad(Date.now());
     setLoading(false);
   }, [range[0], range[1]]);
@@ -1886,7 +2103,7 @@ function ManagerJobs() {
           </div>
           <div style={{ fontSize: 12, color: "var(--stone)" }}>{job.address}</div>
           <div className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", marginTop: 3, letterSpacing: .5 }}>
-            Crew {job.crew_number}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
+            {crewLabel(job.crew_number)}{job.truck_number ? ` · Truck ${job.truck_number}` : ""}
             {job.is_project && <span style={{ color: "var(--purple)" }}> · Project</span>}
             {job.series_id && <span style={{ color: "var(--lime)" }}> · ↻ Recurring</span>}
           </div>
@@ -1940,7 +2157,7 @@ function ManagerJobs() {
                 <div key={j.id} onClick={() => setEditJob(j)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "6px 0", borderTop: "1px solid var(--bark2)", cursor: "pointer" }}>
                   <div style={{ minWidth: 0 }}>
                     <div className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.client_name || j.address}</div>
-                    <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>Crew {j.crew_number}{j.series_id ? " · ↻" : ""}{j.status === "skipped" ? " · skipped" : ""}</div>
+                    <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>{crewLabel(j.crew_number)}{j.series_id ? " · ↻" : ""}{j.status === "skipped" ? " · skipped" : ""}</div>
                   </div>
                   <span style={{ width: 9, height: 9, borderRadius: "50%", flexShrink: 0, background:
                     j.status === "skipped" ? "var(--warn)" : j.status === "in_progress" ? "var(--purple)" :
@@ -2037,7 +2254,7 @@ function ManagerJobs() {
                 <div key={c.n} className="card" onClick={() => setCrewFilter(crewFilter === c.n ? "" : c.n)}
                   style={{ padding: "11px 13px", cursor: "pointer", border: crewFilter === c.n ? "1.5px solid var(--mgr-lt)" : undefined }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                    <span className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>CREW {c.n}</span>
+                    <span className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>{crewLabel(c.n)}</span>
                     <span className="hd-cond" style={{ fontSize: 13, color: c.doneN === c.total ? "var(--leaf)" : "var(--mgr-lt)" }}>{c.doneN}/{c.total} done</span>
                   </div>
                   <div style={{ height: 7, borderRadius: 4, background: "var(--bark)", overflow: "hidden", marginBottom: 6 }}>
@@ -2050,7 +2267,7 @@ function ManagerJobs() {
               ))}
               {crewFilter && (
                 <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", margin: "6px 0 10px", display: "flex", justifyContent: "space-between" }}>
-                  <span>Showing Crew {crewFilter} only</span>
+                  <span>Showing {crewLabel(crewFilter)} only</span>
                   <span style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setCrewFilter("")}>Show all crews</span>
                 </div>
               )}
@@ -2062,7 +2279,7 @@ function ManagerJobs() {
           {dayFiltered.length === 0 ? (
             <div className="empty" style={{ paddingTop: 30 }}>
               <Ic n="list" size={36} color="var(--moss)" style={{ marginBottom: 8 }} />
-              <div className="hd-cond">No jobs {crewFilter ? `for Crew ${crewFilter}` : `on ${prettyDate(date)}`}</div>
+              <div className="hd-cond">No jobs {crewFilter ? `for ${crewLabel(crewFilter)}` : `on ${prettyDate(date)}`}</div>
             </div>
           ) : (
             <div style={{ marginTop: 18 }}>
@@ -2161,10 +2378,10 @@ function NewProject({ onDone, onCancel }) {
     let n = 0;
     if (project) n = await generateProjectJobs(project, days);
     setBusy(false);
-    onDone?.(`Project created — ${n} day${n > 1 ? "s" : ""} scheduled for Crew ${f.crew}.`);
+    onDone?.(`Project created — ${n} day${n > 1 ? "s" : ""} scheduled for ${crewLabel(f.crew)}.`);
   };
 
-  const crewOpts = ALL_CREWS.map((x) => ({ value: x, label: `Crew ${x}` + (isMowing(x) ? " (Mowing)" : "") }));
+  const crewOpts = CREW_OPTS;
 
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
@@ -2279,7 +2496,7 @@ function ProjectDetail({ project, onBack, onChanged }) {
   };
 
   const toggleMember = (n) => setMembers((m) => (m.includes(n) ? m.filter((x) => x !== n) : [...m, n]));
-  const crewOpts = ALL_CREWS.map((x) => ({ value: x, label: `Crew ${x}` }));
+  const crewOpts = CREW_OPTS;
 
   return (
     <div style={{ animation: "fadeUp .25s ease both" }}>
@@ -2325,7 +2542,7 @@ function ProjectDetail({ project, onBack, onChanged }) {
           <div>
             <div className="hd-cond" style={{ fontSize: 10, letterSpacing: 2, color: "var(--stone)", textTransform: "uppercase" }}>Assigned</div>
             <div className="hd-cond" style={{ fontSize: 16, fontWeight: 700, color: "var(--cream)" }}>
-              Crew {project.crew_number}{project.truck_number ? ` · Truck ${project.truck_number}` : ""}
+              {crewLabel(project.crew_number)}{project.truck_number ? ` · Truck ${project.truck_number}` : ""}
             </div>
             {project.members?.length > 0 && <div style={{ fontSize: 13, color: "var(--stone)" }}>{project.members.join(", ")}</div>}
           </div>
@@ -2397,7 +2614,7 @@ function ProjectsTab() {
       <div className="hd-bebas" style={{ fontSize: 19, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.05 }}>{p.name}</div>
       <div style={{ fontSize: 12, color: "var(--stone)", marginTop: 3 }}><Ic n="pin" size={12} /> {p.address}</div>
       <div className="hd-cond" style={{ fontSize: 12, color: "var(--mgr-lt)", marginTop: 5, letterSpacing: .5 }}>
-        Crew {p.crew_number} · {prettyDate(p.start_date)} → {prettyDate(p.end_date)}
+        {crewLabel(p.crew_number)} · {prettyDate(p.start_date)} → {prettyDate(p.end_date)}
       </div>
       {p.contact_name && <div style={{ fontSize: 12, color: "var(--stone)", marginTop: 3 }}><Ic n="user" size={12} /> {p.contact_name}</div>}
     </div>
@@ -2473,7 +2690,7 @@ function CrewsTab() {
         <div key={c.crew_number} className="card" style={{ padding: "11px 13px", borderLeft: `4px solid ${isMowing(c.crew_number) ? "var(--lime)" : "var(--moss)"}` }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             <span className="hd-bebas" style={{ fontSize: 17, color: "var(--cream)", letterSpacing: 1 }}>
-              CREW {c.crew_number} {isMowing(c.crew_number) && <span style={{ fontSize: 12, color: "var(--lime)" }}>MOWING</span>}
+              {crewLabel(c.crew_number)} {isMowing(c.crew_number) && <span style={{ fontSize: 12, color: "var(--lime)" }}>MOWING</span>}
             </span>
             {c.truck_number && <span className="pill">Truck {c.truck_number}</span>}
           </div>
@@ -2783,9 +3000,53 @@ function ManagerHome({ onLogout }) {
 /* ===================================================================
    ROOT
    =================================================================== */
+function AuthLogin() {
+  const [email, setEmail] = useState("");
+  const [pass, setPass] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const submit = async () => {
+    if (!email.trim() || !pass) { setErr("Enter your email and password."); return; }
+    setBusy(true); setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password: pass });
+    setBusy(false);
+    if (error) setErr("Sign-in failed — check your email and password.");
+    // success: App's auth listener swaps the screen automatically
+  };
+  return (
+    <div className="splash">
+      <div style={{ marginTop: "auto", textAlign: "center" }}>
+        <div className="logo-title">TotalFlo</div>
+        <div className="logo-sub">J&amp;J &amp; Son Lawn Care</div>
+      </div>
+      <div style={{ width: "100%", maxWidth: 360, marginTop: 36 }}>
+        <span className="label">Email</span>
+        <input className="input" type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" autoComplete="username"
+          value={email} onChange={(e) => setEmail(e.target.value)} style={{ marginBottom: 12 }} />
+        <span className="label">Password</span>
+        <input className="input" type="password" autoComplete="current-password" value={pass}
+          onChange={(e) => setPass(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} style={{ marginBottom: 16 }} />
+        {err && <div className="error" style={{ marginBottom: 12 }}>{err}</div>}
+        <button className="btn btn-lime" disabled={busy} onClick={submit}>{busy ? "…" : "Sign in"}</button>
+        <div className="hd-cond" style={{ fontSize: 12, color: "var(--moss)", marginTop: 14, textAlign: "center" }}>
+          Sign in once on this device to access TotalFlo.
+        </div>
+      </div>
+      <div style={{ marginTop: "auto" }} />
+    </div>
+  );
+}
+
 export default function App() {
   const [screen, setScreen] = useState("login"); // login | crew | manager
   const [crew, setCrew] = useState(null);
+  const [session, setSession] = useState(undefined); // undefined=checking, null=signed out, object=signed in
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
   const [lang, setLangState] = useState(() => {
     try { return localStorage.getItem("tf_lang") || "en"; } catch { return "en"; }
   });
@@ -2807,16 +3068,25 @@ export default function App() {
       <LangContext.Provider value={{ lang, setLang }}>
         <style>{CSS}</style>
         <div className="app">
-          {screen === "login" && (
-            <LoginScreen
-              onCrewLogin={(n) => { setCrew(n); setScreen("crew"); }}
-              onManagerLogin={() => setScreen("manager")} />
-          )}
-          {screen === "crew" && crew && (
-            <CrewHome crew={crew} onLogout={() => { setCrew(null); setScreen("login"); }} />
-          )}
-          {screen === "manager" && (
-            <ManagerHome onLogout={() => setScreen("login")} />
+          {session === undefined ? (
+            <div className="splash"><div style={{ margin: "auto" }}><span className="spinner" /></div></div>
+          ) : !session ? (
+            <AuthLogin />
+          ) : (
+            <>
+              {screen === "login" && (
+                <LoginScreen
+                  onCrewLogin={(n) => { setCrew(n); setScreen("crew"); }}
+                  onManagerLogin={() => setScreen("manager")}
+                  onSignOutDevice={() => supabase.auth.signOut()} />
+              )}
+              {screen === "crew" && crew && (
+                <CrewHome crew={crew} onLogout={() => { setCrew(null); setScreen("login"); }} />
+              )}
+              {screen === "manager" && (
+                <ManagerHome onLogout={() => setScreen("login")} />
+              )}
+            </>
           )}
         </div>
       </LangContext.Provider>
