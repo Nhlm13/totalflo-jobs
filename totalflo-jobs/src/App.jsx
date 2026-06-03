@@ -2210,6 +2210,7 @@ function ManagerJobs() {
   const [resched, setResched] = useState(false);
   const [showRecurring, setShowRecurring] = useState(false);
   const [lastLoad, setLastLoad] = useState(Date.now());
+  const [reordering, setReordering] = useState(false);
 
   const range = (() => {
     if (viewMode === "week") { const a = weekAnchor(date); return [a, addDays(a, 6)]; }
@@ -2246,6 +2247,21 @@ function ManagerJobs() {
   }, [editJob, editSeries, resched]);
 
   const del = async (job) => { if (!window.confirm("Remove this visit?")) return; await supabase.from("jobs").delete().eq("id", job.id); load(); };
+  // Reorder a stop within its own crew's scheduled route (renumbers that crew's
+  // scheduled stops 0..n so the order is clean even if values were duplicated).
+  const moveJob = async (job, dir) => {
+    const sibs = jobs.filter((j) => j.date === job.date && j.crew_number === job.crew_number && j.status === "scheduled")
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    const idx = sibs.findIndex((j) => j.id === job.id);
+    const ni = idx + dir;
+    if (idx < 0 || ni < 0 || ni >= sibs.length) return;
+    const arr = [...sibs];
+    [arr[idx], arr[ni]] = [arr[ni], arr[idx]];
+    setReordering(true);
+    await Promise.all(arr.map((j, i) => supabase.from("jobs").update({ sort_order: i }).eq("id", j.id)));
+    setReordering(false);
+    load();
+  };
   const liveSecs = (job) => (job.elapsed_seconds || 0) +
     (job.status === "in_progress" && job.started_at ? Math.max(0, Math.floor((now - new Date(job.started_at).getTime()) / 1000)) : 0);
 
@@ -2271,12 +2287,18 @@ function ManagerJobs() {
   const completed = byStatus(["completed", "done_for_today"]);
   const skippedJobs = byStatus(["skipped"]);
 
-  const Row = ({ job }) => (
+  const Row = ({ job, canReorder, isFirst, isLast }) => (
     <div className="card" style={{ padding: "11px 13px", borderLeft: `4px solid ${
       job.status === "skipped" ? "var(--warn)" :
       job.status === "in_progress" ? "var(--purple)" :
       job.status === "completed" || job.status === "done_for_today" ? "var(--leaf)" : "var(--danger)"}`, opacity: job.status === "skipped" ? 0.7 : 1 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        {canReorder && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0, marginRight: 2 }}>
+            <button className="x-btn" title="Move up" disabled={isFirst || reordering} style={{ width: 30, height: 26, opacity: isFirst ? 0.3 : 1 }} onClick={() => moveJob(job, -1)}>▲</button>
+            <button className="x-btn" title="Move down" disabled={isLast || reordering} style={{ width: 30, height: 26, opacity: isLast ? 0.3 : 1 }} onClick={() => moveJob(job, 1)}>▼</button>
+          </div>
+        )}
         <div style={{ minWidth: 0, flex: 1, cursor: "pointer" }} onClick={() => setEditJob(job)}>
           <div className="hd-bebas" style={{ fontSize: 18, color: "var(--cream)", letterSpacing: 1, lineHeight: 1.1 }}>
             {job.client_name || job.address || "Job"}
@@ -2469,7 +2491,16 @@ function ManagerJobs() {
           ) : (
             <div style={{ marginTop: 18 }}>
               {progress.length > 0 && <><div className="section-hd"><Ic n="clock" size={14} /> In Progress — {progress.length}</div>{progress.map((j) => <Row key={j.id} job={j} />)}</>}
-              {scheduled.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}>Scheduled — {scheduled.length}</div>{scheduled.map((j) => <Row key={j.id} job={j} />)}</>}
+              {scheduled.length > 0 && (
+                <>
+                  <div className="section-hd" style={{ marginTop: 14 }}>Scheduled — {scheduled.length}</div>
+                  {scheduled.map((j) => {
+                    const sibs = scheduled.filter((x) => x.crew_number === j.crew_number);
+                    const i = sibs.findIndex((x) => x.id === j.id);
+                    return <Row key={j.id} job={j} canReorder={sibs.length > 1} isFirst={i === 0} isLast={i === sibs.length - 1} />;
+                  })}
+                </>
+              )}
               {completed.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}><Ic n="check" size={14} /> Completed — {completed.length}</div>{completed.map((j) => <Row key={j.id} job={j} />)}</>}
               {skippedJobs.length > 0 && <><div className="section-hd" style={{ marginTop: 14 }}>Skipped — {skippedJobs.length}</div>{skippedJobs.map((j) => <Row key={j.id} job={j} />)}</>}
             </div>
