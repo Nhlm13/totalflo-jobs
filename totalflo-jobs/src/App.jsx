@@ -1014,11 +1014,12 @@ function ImportDay({ onClose, onDone }) {
 
   const recs = (rows || []).map((r) => {
     const assigned = r.AssignedTo || "";
-    const norm = assigned.split(",")[0].replace(/\s+/g, "").toUpperCase();
-    let crew = crewFromSap(assigned);
-    if (crew == null && overrides[norm] != null) crew = overrides[norm];
+    const parts = assigned.split(",").map((x) => x.trim()).filter(Boolean);
+    const norms = parts.map((p) => p.replace(/\s+/g, "").toUpperCase());
+    const teams = [...new Set(norms.map((nm) => (SAP_CREW[nm] != null ? SAP_CREW[nm] : (overrides[nm] != null ? overrides[nm] : null))).filter((x) => x != null))];
+    const unmappedHere = norms.filter((nm) => SAP_CREW[nm] == null && overrides[nm] == null);
     return {
-      crew, norm, assigned,
+      teams, unmappedHere, assigned,
       name: reorderName(r.ClientName) || r.ClientName || "",
       address: [r.ServiceAddressLine1, r.ServiceCity, r.ServiceZIP].filter(Boolean).join(", "),
       date: sapDateToISO(r.ScheduleDate),
@@ -1026,37 +1027,40 @@ function ImportDay({ onClose, onDone }) {
       status: /complete/i.test(r.ScheduleStatus || "") ? "completed" : "scheduled",
       sort_order: parseInt(r.RouteOrder, 10) || 0,
       ext_ref: r.WorkOrderProjectNum || null,
-      shared: assigned.includes(",") ? assigned : "",
     };
   });
   const dates = [...new Set(recs.map((r) => r.date).filter(Boolean))].sort();
-  const unmapped = [...new Set(recs.filter((r) => r.crew == null).map((r) => r.norm))];
-  const byCrew = {}; recs.forEach((r) => { if (r.crew != null) byCrew[r.crew] = (byCrew[r.crew] || 0) + 1; });
+  const unmapped = [...new Set(recs.flatMap((r) => r.unmappedHere))];
+  const byCrew = {}; recs.forEach((r) => r.teams.forEach((n) => { byCrew[n] = (byCrew[n] || 0) + 1; }));
   const crewsShown = Object.keys(byCrew).map(Number).sort((a, b) => a - b);
+  const totalJobs = recs.reduce((a, r) => a + r.teams.length, 0);
 
   const doImport = async () => {
     if (!recs.length) { setMsg("Nothing to import."); return; }
     if (unmapped.length) { setMsg("Point the unmatched label(s) at a team first."); return; }
     setBusy(true); setMsg(""); setProgress("Checking for jobs already imported…");
     const existing = new Set();
-    const { data: ex } = await supabase.from("jobs").select("ext_ref,date").in("date", dates).eq("source", "sap");
-    (ex || []).forEach((j) => existing.add(`${j.ext_ref}|${j.date}`));
+    const { data: ex } = await supabase.from("jobs").select("ext_ref,date,crew_number").in("date", dates).eq("source", "sap");
+    (ex || []).forEach((j) => existing.add(`${j.ext_ref}|${j.date}|${j.crew_number}`));
     setProgress("Matching properties to your client list…");
     const { data: clients } = await supabase.from("clients").select("id,address,lat,lng");
     const cmap = {}; (clients || []).forEach((c) => { if (c.address) cmap[c.address.trim().toLowerCase()] = c; });
 
     const toInsert = []; let dup = 0;
     recs.forEach((r) => {
-      if (!r.date || r.crew == null) return;
-      if (r.ext_ref && existing.has(`${r.ext_ref}|${r.date}`)) { dup++; return; }
+      if (!r.date || !r.teams.length) return;
       const m = cmap[(r.address || "").trim().toLowerCase()];
-      toInsert.push({
-        crew_number: r.crew, date: r.date, address: r.address,
-        title: r.name || null, client_id: m ? m.id : null,
-        lat: m ? m.lat : null, lng: m ? m.lng : null,
-        service_type: r.service_type, notes: r.shared ? `SAP: ${r.shared}` : null,
-        status: r.status, sort_order: r.sort_order,
-        ext_ref: r.ext_ref, source: "sap", members: [],
+      const teamsNote = r.teams.length > 1 ? `Teams: ${r.teams.map(crewLabel).join(", ")}` : "";
+      r.teams.forEach((team) => {
+        if (r.ext_ref && existing.has(`${r.ext_ref}|${r.date}|${team}`)) { dup++; return; }
+        toInsert.push({
+          crew_number: team, date: r.date, address: r.address,
+          title: r.name || null, client_id: m ? m.id : null,
+          lat: m ? m.lat : null, lng: m ? m.lng : null,
+          service_type: r.service_type, notes: teamsNote || null,
+          status: r.status, sort_order: r.sort_order,
+          ext_ref: r.ext_ref, source: "sap", members: [],
+        });
       });
     });
     if (!toInsert.length) { setBusy(false); setMsg(dup ? `All ${dup} jobs were already imported for ${dates.map(prettyDate).join(", ")}.` : "Nothing new to import."); return; }
@@ -1093,7 +1097,7 @@ function ImportDay({ onClose, onDone }) {
       {rows && (
         <>
           <div className="card" style={{ padding: "11px 13px", marginBottom: 12, background: "var(--bark2)" }}>
-            <div className="hd-bebas" style={{ fontSize: 16, color: "var(--cream)", letterSpacing: 1 }}>{recs.length} jobs · {dates.map(prettyDate).join(", ") || "no dates found"}</div>
+            <div className="hd-bebas" style={{ fontSize: 16, color: "var(--cream)", letterSpacing: 1 }}>{totalJobs} jobs · {dates.map(prettyDate).join(", ") || "no dates found"}</div>
             <div style={{ marginTop: 8 }}>
               {crewsShown.map((n) => (
                 <div key={n} className="hd-cond" style={{ fontSize: 13, color: "var(--cream)", display: "flex", justifyContent: "space-between", padding: "2px 0" }}>
@@ -1122,7 +1126,7 @@ function ImportDay({ onClose, onDone }) {
 
           {busy && <div className="hd-cond" style={{ fontSize: 13, color: "var(--mgr-lt)", marginBottom: 10 }}>{progress}</div>}
           <button className="btn btn-mgr btn-sm" disabled={busy || !recs.length} onClick={doImport}>
-            {busy ? "Importing…" : `Import ${recs.length} jobs`}
+            {busy ? "Importing…" : `Import ${totalJobs} jobs`}
           </button>
           <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>
             Re-importing the same day won't create duplicates, and won't touch jobs a crew already finished.
@@ -1166,7 +1170,7 @@ function BuildSchedule({ onDone }) {
     setMembers((m) => (m.includes(name) ? m.filter((x) => x !== name) : [...m, name]));
 
   const [showImport, setShowImport] = useState(false);
-  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", recurring: false, weekdays: [], frequency: "weekly", recurUntil: "" }]);
+  const addStop = () => setStops((s) => [...s, { key: Date.now() + Math.random(), search: "", client: null, address: "", service_type: "", notes: "", teams: [], showTeams: false, recurring: false, weekdays: [], frequency: "weekly", recurUntil: "" }]);
   const setStop = (key, patch) => setStops((s) => s.map((st) => (st.key === key ? { ...st, ...patch } : st)));
   const rmStop = (key) => setStops((s) => s.filter((st) => st.key !== key));
   const moveStop = (key, dir) => setStops((s) => {
@@ -1249,47 +1253,61 @@ function BuildSchedule({ onDone }) {
     }
     setBusy(true); setMsg("");
 
-    // 1. save/refresh the crew roster
+    // 1. save/refresh the primary crew roster
     const { error: crewErr } = await supabase.from("crews")
       .update({ truck_number: truck || null, members, updated_at: new Date().toISOString() })
       .eq("crew_number", crew);
     if (crewErr) { setBusy(false); setMsg(`Couldn't save the crew roster: ${crewErr.message}`); return; }
 
-    // 2. one-off stops -> a single job; recurring stops -> a job_series + generated visits
+    // pull rosters for any additional teams so their copies carry their own people/truck
+    const extraTeams = [...new Set(valid.flatMap((s) => s.teams || []))].filter((n) => n !== Number(crew));
+    const rosters = {};
+    if (extraTeams.length) {
+      const { data: rd } = await supabase.from("crews").select("crew_number,members,truck_number").in("crew_number", extraTeams);
+      (rd || []).forEach((c) => (rosters[c.crew_number] = c));
+    }
+
+    // 2. one-off stops -> a job; recurring stops -> a job_series + visits. A stop
+    //    assigned to several teams becomes a separate copy for each team.
     let stopIndex = 0;
     let total = 0;
     for (const s of valid) {
       let lat = s.client?.lat ?? s.lat ?? null, lng = s.client?.lng ?? s.lng ?? null;
       if (lat == null) { const g = await geocode(s.address); if (g) { lat = g.lat; lng = g.lng; } }
 
-      const content = {
-        crew_number: Number(crew),
-        client_id: s.client?.id || null,
-        address: s.address,
-        lat, lng,
-        service_type: s.service_type || null,
-        notes: s.notes || null,
-        truck_number: truck || null,
-        members,
-      };
+      const teamSet = [...new Set([Number(crew), ...((s.teams || []).map(Number))])];
+      const teamsNote = teamSet.length > 1 ? `Teams: ${teamSet.map(crewLabel).join(", ")}` : "";
+      const dates = s.recurring ? seriesDates(s.weekdays, s.frequency, date, s.recurUntil) : [date];
 
-      let dates = [date];
-      let seriesId = null;
-      if (s.recurring) {
-        const { data: ser, error: serErr } = await supabase.from("job_series")
-          .insert({ ...content, weekdays: s.weekdays, frequency: s.frequency, start_date: date, end_date: s.recurUntil, active: true })
-          .select().single();
-        if (serErr) { setBusy(false); setMsg(`Couldn't save the recurring service: ${serErr.message}`); return; }
-        seriesId = ser.id;
-        dates = seriesDates(s.weekdays, s.frequency, date, s.recurUntil);
-      }
+      for (const team of teamSet) {
+        const isPrimary = team === Number(crew);
+        const content = {
+          crew_number: team,
+          client_id: s.client?.id || null,
+          address: s.address,
+          lat, lng,
+          service_type: s.service_type || null,
+          notes: [s.notes, teamsNote].filter(Boolean).join(" · ") || null,
+          truck_number: isPrimary ? (truck || null) : (rosters[team]?.truck_number || null),
+          members: isPrimary ? members : (rosters[team]?.members || []),
+        };
 
-      for (const d of dates) {
-        const row = { ...content, date: d, status: "scheduled", sort_order: stopIndex };
-        if (seriesId) row.series_id = seriesId;
-        const { error } = await supabase.from("jobs").insert(row);
-        if (error) { setBusy(false); setMsg(`Couldn't save the schedule: ${error.message}`); return; }
-        total++;
+        let seriesId = null;
+        if (s.recurring) {
+          const { data: ser, error: serErr } = await supabase.from("job_series")
+            .insert({ ...content, weekdays: s.weekdays, frequency: s.frequency, start_date: date, end_date: s.recurUntil, active: true })
+            .select().single();
+          if (serErr) { setBusy(false); setMsg(`Couldn't save the recurring service: ${serErr.message}`); return; }
+          seriesId = ser.id;
+        }
+
+        for (const d of dates) {
+          const row = { ...content, date: d, status: "scheduled", sort_order: stopIndex };
+          if (seriesId) row.series_id = seriesId;
+          const { error } = await supabase.from("jobs").insert(row);
+          if (error) { setBusy(false); setMsg(`Couldn't save the schedule: ${error.message}`); return; }
+          total++;
+        }
       }
       stopIndex++;
     }
@@ -1297,7 +1315,7 @@ function BuildSchedule({ onDone }) {
     const anyRecurring = valid.some((s) => s.recurring);
     onDone?.(anyRecurring
       ? `Scheduled ${total} visit${total > 1 ? "s" : ""} for ${crewLabel(crew)} (${valid.length} stop${valid.length > 1 ? "s" : ""}, some recurring).`
-      : `Scheduled ${valid.length} stop${valid.length > 1 ? "s" : ""} for ${crewLabel(crew)} on ${prettyDate(date)}.`);
+      : `Scheduled ${total} stop${total > 1 ? "s" : ""} on ${prettyDate(date)}.`);
   };
 
   const crewOpts = CREW_OPTS;
@@ -1360,6 +1378,32 @@ function BuildSchedule({ onDone }) {
               <span className="label">Notes for crew</span>
               <textarea className="input" style={{ height: 56, fontSize: 14 }} placeholder="Gate code, dog on site, skip back lawn…"
                 value={s.notes} onChange={(e) => setStop(s.key, { notes: e.target.value })} />
+
+              {!s.showTeams && (s.teams || []).length === 0 ? (
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setStop(s.key, { showTeams: true })}>
+                  <Ic n="plus" size={13} style={{ marginRight: 6, verticalAlign: -2 }} />Also assign another team
+                </button>
+              ) : (
+                <div style={{ marginTop: 12 }}>
+                  <span className="label">Also done by these teams (each gets its own copy)</span>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {CREWS.filter((c) => c.n !== Number(crew)).map((c) => {
+                      const on = (s.teams || []).includes(c.n);
+                      return (
+                        <button key={c.n} className={"member-chip" + (on ? " on" : "")}
+                          onClick={() => setStop(s.key, { teams: on ? s.teams.filter((x) => x !== c.n) : [...(s.teams || []), c.n] })}>
+                          {c.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {(s.teams || []).length > 0 && (
+                    <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 6 }}>
+                      Copied to {[Number(crew), ...s.teams].map(crewLabel).join(", ")} — each tracks its own time.
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12 }}>
                 <input type="checkbox" id={`rec-${s.key}`} checked={s.recurring}
@@ -1468,12 +1512,20 @@ function JobsMap({ jobs }) {
     return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
   }, [ready]);
 
+  const sigRef = useRef("");
+  const posRef = useRef("");
   useEffect(() => {
     if (!mapRef.current || !layerRef.current) return;
+    const ok = (la, lo) => la != null && lo != null && la > 24 && la < 50 && lo > -125 && lo < -66;
+    // Skip rebuilds when nothing changed, so the once-a-second clock re-render
+    // doesn't wipe markers and reset the user's zoom.
+    const sig = jobs.map((j) => `${j.id}:${j.lat},${j.lng}:${j.status}`).join("|") + `|shop:${shopPt.join(",")}`;
+    if (sig === sigRef.current) return;
+    sigRef.current = sig;
     layerRef.current.clearLayers();
     const pts = [];
     jobs.forEach((job) => {
-      if (job.lat == null || job.lng == null) return;
+      if (!ok(job.lat, job.lng)) return;
       pts.push([job.lat, job.lng]);
       const complete = job.status === "completed" || job.status === "done_for_today";
       const prog = job.status === "in_progress";
@@ -1504,7 +1556,7 @@ function JobsMap({ jobs }) {
     });
 
     // the shop / yard — fixed start & end of every route
-    if (shopPt) {
+    if (ok(shopPt[0], shopPt[1])) {
       pts.push(shopPt);
       window.L.marker(shopPt, {
         icon: window.L.divIcon({
@@ -1520,7 +1572,11 @@ function JobsMap({ jobs }) {
         </div>`
       ).addTo(layerRef.current);
     }
-    if (pts.length) { try { mapRef.current.fitBounds(pts, { padding: [40, 40], maxZoom: 14 }); } catch (e) {} }
+    const posSig = pts.map((p) => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).sort().join("|");
+    if (pts.length && posSig !== posRef.current) {
+      posRef.current = posSig;
+      try { mapRef.current.fitBounds(pts, { padding: [40, 40], maxZoom: 14 }); } catch (e) { /* ignore */ }
+    }
   }, [jobs, shopPt]);
 
   return (
@@ -1572,6 +1628,9 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
   const [members, setMembers] = useState(Array.isArray(job.members) ? job.members : []);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [editTime, setEditTime] = useState(false);
+  const [hrs, setHrs] = useState(Math.floor((job.elapsed_seconds || 0) / 3600));
+  const [mins, setMins] = useState(Math.floor(((job.elapsed_seconds || 0) % 3600) / 60));
   const done = job.status === "completed" || job.status === "done_for_today";
   const skipped = job.status === "skipped";
 
@@ -1585,6 +1644,15 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
   const saveVisit = () => after(() => supabase.from("jobs").update({ date: dateVal, members }).eq("id", job.id));
   const setStatus = (status) => after(() => supabase.from("jobs").update({ status }).eq("id", job.id));
   const del = () => { if (window.confirm("Delete just this visit?")) after(() => supabase.from("jobs").delete().eq("id", job.id)); };
+  const saveTime = () => {
+    const secs = Math.max(0, (parseInt(hrs, 10) || 0) * 3600 + (parseInt(mins, 10) || 0) * 60);
+    const upd = { elapsed_seconds: secs };
+    if (job.status === "in_progress") {
+      upd.status = job.is_project ? "done_for_today" : "completed";
+      upd.completed_at = job.started_at ? new Date(new Date(job.started_at).getTime() + secs * 1000).toISOString() : new Date().toISOString();
+    }
+    after(() => supabase.from("jobs").update(upd).eq("id", job.id));
+  };
   const groups = [["before", "Before"], ["after", "After"], ["damage", "Existing damage"], ["other", "Other"]];
 
   return (
@@ -1626,11 +1694,37 @@ function VisitEditor({ job, onClose, onChanged, onEditSeries }) {
           </>
         )}
 
-        {(job.started_at || job.elapsed_seconds > 0) && (
-          <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)", margin: "12px 0" }}>
-            {job.started_at && <>Started {fmtTime(job.started_at)}</>}
-            {job.completed_at && <> · Finished {fmtTime(job.completed_at)}</>}
-            {job.elapsed_seconds > 0 && <> · {fmtDuration(job.elapsed_seconds)}</>}
+        {(job.started_at || job.elapsed_seconds > 0 || job.status === "in_progress") && (
+          <div style={{ borderTop: "1px solid var(--moss)", marginTop: 12, paddingTop: 12 }}>
+            <div className="hd-cond" style={{ fontSize: 13, color: "var(--stone)" }}>
+              {job.started_at && <>Started {fmtTime(job.started_at)}</>}
+              {job.completed_at && <> · Finished {fmtTime(job.completed_at)}</>}
+              {job.status === "in_progress"
+                ? <> · <span style={{ color: "var(--purple)" }}>clock still running</span></>
+                : (job.elapsed_seconds > 0 && <> · {fmtDuration(job.elapsed_seconds)}</>)}
+            </div>
+            {!editTime ? (
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setEditTime(true)}>
+                <Ic n="clock" size={14} style={{ marginRight: 6, verticalAlign: -2 }} />Adjust time worked
+              </button>
+            ) : (
+              <div style={{ marginTop: 10 }}>
+                <span className="label">Set time worked</span>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                  <input className="input" type="number" min="0" value={hrs} onChange={(e) => setHrs(e.target.value)} style={{ width: 72 }} />
+                  <span className="hd-cond" style={{ color: "var(--stone)" }}>hrs</span>
+                  <input className="input" type="number" min="0" max="59" value={mins} onChange={(e) => setMins(e.target.value)} style={{ width: 72 }} />
+                  <span className="hd-cond" style={{ color: "var(--stone)" }}>min</span>
+                </div>
+                {job.status === "in_progress" && <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginBottom: 8 }}>Saving stops the clock and marks this finished.</div>}
+                {msg && <div className="error" style={{ marginBottom: 8 }}>{msg}</div>}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-mgr btn-sm" disabled={busy} onClick={saveTime}>Save time</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setEditTime(false)}>Cancel</button>
+                </div>
+                <div className="hd-cond" style={{ fontSize: 11, color: "var(--moss)", marginTop: 8 }}>This is the time that feeds the Hours report for everyone on this job.</div>
+              </div>
+            )}
           </div>
         )}
 
@@ -2019,6 +2113,91 @@ function RescheduleTool({ initialDate, onClose, onChanged }) {
   );
 }
 
+// Read-only overview of the recurring mow schedule, grouped by weekday.
+// WMT = weekly, BMT = bi-weekly (pulled from each series' frequency).
+function RecurringSchedule({ onClose }) {
+  const [series, setSeries] = useState(null);
+  const [names, setNames] = useState({});
+  const [crewFilter, setCrewFilter] = useState("");
+  const [editId, setEditId] = useState(null);
+
+  const load = useCallback(() => {
+    supabase.from("job_series").select("*").eq("active", true).then(({ data }) => setSeries(data || []));
+  }, []);
+  useEffect(() => {
+    load();
+    supabase.from("clients").select("id,name").then(({ data }) => { const m = {}; (data || []).forEach((c) => (m[c.id] = c.name)); setNames(m); });
+  }, [load]);
+
+  const DOW = [["Monday", 1], ["Tuesday", 2], ["Wednesday", 3], ["Thursday", 4], ["Friday", 5], ["Saturday", 6], ["Sunday", 0]];
+  const list = series || [];
+  const filtered = crewFilter ? list.filter((s) => s.crew_number === Number(crewFilter)) : list;
+  const crewsPresent = [...new Set(list.map((s) => s.crew_number))].sort((a, b) => a - b);
+  const nameOf = (s) => names[s.client_id] || s.address || "Stop";
+
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div className="hd-bebas" style={{ fontSize: 20, color: "var(--mgr-lt)", letterSpacing: 1 }}>RECURRING SCHEDULE</div>
+        <button className="x-btn" onClick={onClose}>✕</button>
+      </div>
+      <div className="hd-cond" style={{ fontSize: 12, color: "var(--moss)", margin: "6px 0 12px" }}>
+        Your standing mow routes. <span style={{ color: "var(--leaf)" }}>WMT</span> = weekly · <span style={{ color: "var(--warn)" }}>BMT</span> = every other week. Tap any to change it.
+      </div>
+
+      {crewsPresent.length > 1 && (
+        <div style={{ marginBottom: 14 }}>
+          <Dropdown value={crewFilter} placeholder="All teams"
+            options={[{ value: "", label: "All teams" }, ...crewsPresent.map((n) => ({ value: n, label: crewLabel(n) }))]}
+            onChange={(v) => setCrewFilter(v === "" ? "" : String(v))} />
+        </div>
+      )}
+
+      {series === null ? (
+        <div className="empty"><span className="spinner" /></div>
+      ) : list.length === 0 ? (
+        <div className="empty" style={{ paddingTop: 24 }}>
+          <Ic n="cal2" size={34} color="var(--moss)" style={{ marginBottom: 8 }} />
+          <div className="hd-cond">No recurring jobs set up yet</div>
+        </div>
+      ) : (
+        DOW.map(([label, n]) => {
+          const items = filtered
+            .filter((s) => Array.isArray(s.weekdays) && s.weekdays.includes(n))
+            .sort((a, b) => (a.crew_number - b.crew_number) || nameOf(a).localeCompare(nameOf(b)));
+          if (!items.length) return null;
+          return (
+            <div key={n} style={{ marginBottom: 16 }}>
+              <div className="hd-bebas" style={{ fontSize: 16, color: "var(--cream)", letterSpacing: 1, borderBottom: "1px solid var(--moss)", paddingBottom: 4, marginBottom: 6 }}>
+                {label} · {items.length}
+              </div>
+              {items.map((s) => {
+                const bi = s.frequency === "biweekly";
+                return (
+                  <div key={s.id} onClick={() => setEditId(s.id)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 0", borderBottom: "1px solid var(--bark2)", cursor: "pointer" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="hd-cond" style={{ fontSize: 14, color: "var(--cream)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{nameOf(s)}</div>
+                      <div className="hd-cond" style={{ fontSize: 11, color: "var(--stone)" }}>{crewLabel(s.crew_number)}{s.address ? ` · ${s.address}` : ""}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                      <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 700, fontSize: 12, letterSpacing: .5, padding: "2px 8px", borderRadius: 20,
+                        background: bi ? "rgba(212,160,23,.18)" : "rgba(106,184,32,.18)", color: bi ? "var(--warn)" : "var(--leaf)" }}>
+                        {bi ? "BMT" : "WMT"}
+                      </span>
+                      <span style={{ color: "var(--moss)", fontSize: 16 }}>›</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })
+      )}
+      {editId && <SeriesEditor seriesId={editId} fromDate={todayStr()} onClose={() => setEditId(null)} onChanged={load} />}
+    </Modal>
+  );
+}
+
 function ManagerJobs() {
   const [viewMode, setViewMode] = useState("day"); // day | week | month
   const [date, setDate] = useState(todayStr());
@@ -2029,6 +2208,7 @@ function ManagerJobs() {
   const [editJob, setEditJob] = useState(null);
   const [editSeries, setEditSeries] = useState(null); // { seriesId, fromDate }
   const [resched, setResched] = useState(false);
+  const [showRecurring, setShowRecurring] = useState(false);
   const [lastLoad, setLastLoad] = useState(Date.now());
 
   const range = (() => {
@@ -2236,9 +2416,14 @@ function ManagerJobs() {
         <button className="btn btn-ghost btn-sm" style={{ width: "auto", padding: "10px 12px" }} onClick={() => setDate(todayStr())}>Today</button>
       </div>
 
-      <button className="btn btn-ghost btn-sm" onClick={() => setResched(true)} style={{ marginBottom: 14, borderColor: "var(--mgr)", color: "var(--mgr-lt)" }}>
-        <Ic n="cal2" size={15} style={{ marginRight: 7, verticalAlign: -3 }} />Reschedule / weather day
-      </button>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <button className="btn btn-ghost btn-sm" onClick={() => setResched(true)} style={{ borderColor: "var(--mgr)", color: "var(--mgr-lt)" }}>
+          <Ic n="cal2" size={15} style={{ marginRight: 7, verticalAlign: -3 }} />Reschedule / weather day
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowRecurring(true)} style={{ borderColor: "var(--mgr)", color: "var(--mgr-lt)" }}>
+          <Ic n="refresh" size={14} style={{ marginRight: 7, verticalAlign: -2 }} />Recurring
+        </button>
+      </div>
 
       {loading && <div className="empty"><span className="spinner" /></div>}
 
@@ -2297,6 +2482,7 @@ function ManagerJobs() {
       {editSeries && <SeriesEditor seriesId={editSeries.seriesId} fromDate={editSeries.fromDate}
         onClose={() => setEditSeries(null)} onChanged={reload} />}
       {resched && <RescheduleTool initialDate={date} onClose={() => setResched(false)} onChanged={reload} />}
+      {showRecurring && <RecurringSchedule onClose={() => setShowRecurring(false)} />}
     </div>
   );
 }
